@@ -73,7 +73,7 @@ def build_graph():
     g.add_node("guard", n_guard)
     g.add_node("reformulate", n_reformulate)
     g.add_node("classify", n_classify)
-    g.add_node("route", n_route)
+    g.add_node("router", n_route)
     g.add_node("call_agent", n_call_agent)
     g.add_node("finalize", n_finalize)
 
