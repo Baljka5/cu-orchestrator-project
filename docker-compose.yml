@@ -1,13 +1,4 @@
 services:
-  api:
-    build: .
-    env_file:
-      - .env
-    ports:
-      - "8000:8000"
-    depends_on:
-      - llm
-
   llm:
     image: vllm/vllm-openai:v0.15.0-cu130
     gpus: all
@@ -15,15 +6,19 @@ services:
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
-    ports:
-      - "8001:8000"
+      - LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:/lib/x86_64-linux-gnu
     volumes:
       - ./models:/models
-      - ~/.cache/huggingface:/root/.cache/huggingface
+    ports:
+      - "8001:8000"
+    entrypoint: ["/bin/bash","-lc"]
     command: >
-      /models/Llama-3.1-8B-Instruct
-      --host 0.0.0.0
-      --port 8000
-      --gpu-memory-utilization 0.80
-      --max-model-len 2048
-
+      set -eux;
+      echo "/usr/lib/x86_64-linux-gnu" > /etc/ld.so.conf.d/00-host-nvidia.conf;
+      echo "/lib/x86_64-linux-gnu" >> /etc/ld.so.conf.d/00-host-nvidia.conf;
+      ldconfig;
+      vllm serve /models/Llama-3.1-8B-Instruct
+        --host 0.0.0.0
+        --port 8000
+        --gpu-memory-utilization 0.80
+        --max-model-len 2048
