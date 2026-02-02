@@ -10,7 +10,7 @@ services:
 
   llm:
     image: vllm/vllm-openai:latest
-    runtime: nvidia
+    gpus: all
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
     ports:
@@ -18,8 +18,8 @@ services:
     volumes:
       - ./models:/models
     command: >
-      --model /models/Llama-3.1-8B-Instruct
+      vllm serve /models/Llama-3.1-8B-Instruct
       --host 0.0.0.0
       --port 8000
-      --gpu-memory-utilization 0.90
-      --max-model-len 4096
+      --gpu-memory-utilization 0.80
+      --max-model-len 2048
