@@ -1,0 +1,9 @@
+[project]
+name = "cu-orchestrator"
+version = "0.1.0"
+description = "CU multi-agent orchestrator (FastAPI + LangGraph)"
+requires-python = ">=3.10"
+dependencies = []
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
