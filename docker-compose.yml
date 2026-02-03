@@ -6,8 +6,7 @@ services:
     ports:
       - "8000:8000"
     depends_on:
-      llm:
-        condition: service_healthy
+      - llm
     restart: unless-stopped
 
   llm:
