@@ -18,7 +18,7 @@ services:
       NVIDIA_VISIBLE_DEVICES: "all"
       NVIDIA_DRIVER_CAPABILITIES: "compute,utility"
       NVIDIA_DISABLE_CUDA_COMPAT: "1"
-      PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
+      PYTORCH_ALLOC_CONF: "expandable_segments:True"
       LD_LIBRARY_PATH: "/usr/local/nvidia/lib64:/usr/local/nvidia/lib:/lib/x86_64-linux-gnu"
 
     volumes:
@@ -27,28 +27,26 @@ services:
     ports:
       - "8001:8000"
 
-    command:
-      - /bin/bash
-      - -lc
-      - |
-          set -eux
+    entrypoint: ["/bin/bash", "-lc"]
 
-          echo "NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-unset}"
-          nvidia-smi
+    command: |
+      set -eux
 
-          rm -f /usr/local/cuda-13.0/compat/libcuda.so* /usr/local/cuda/compat/libcuda.so* || true
-          ldconfig || true
+      echo "NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-unset}"
+      nvidia-smi
 
-          python3 - <<'PY'
-          import torch
-          print("torch:", torch.__version__)
-          print("cuda available:", torch.cuda.is_available())
-          print("cuda device count:", torch.cuda.device_count())
-          PY
+      rm -f /usr/local/cuda-13.0/compat/libcuda.so* /usr/local/cuda/compat/libcuda.so* || true
+      ldconfig || true
 
-          vllm serve /models/Llama-3.1-8B-Instruct-AWQ \
-            --host 0.0.0.0 --port 8000 \
-            --quantization awq_marlin \
-            --max-model-len 2048 \
-            --gpu-memory-utilization 0.90 \
-            --enforce-eager
+      python3 - <<'PY'
+      import torch
+      print("torch:", torch.__version__)
+      print("cuda available:", torch.cuda.is_available())
+      print("cuda device count:", torch.cuda.device_count())
+      PY
+
+      vllm serve /models/Llama-3.1-8B-Instruct-AWQ \
+        --host 0.0.0.0 --port 8000 \
+        --quantization awq_marlin \
+        --max-model-len 2048 \
+        --gpu-memory-utilization 0.90
