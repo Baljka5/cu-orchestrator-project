@@ -12,7 +12,7 @@ services:
     image: vllm/vllm-openai:v0.15.0-cu130
     ipc: host
 
-    runtime: nvidia
+    gpus: all
 
     environment:
       NVIDIA_VISIBLE_DEVICES: "all"
@@ -27,23 +27,28 @@ services:
     ports:
       - "8001:8000"
 
-    entrypoint: ["/bin/bash", "-lc"]
-    command: |
-      set -eux
+    command:
+      - /bin/bash
+      - -lc
+      - |
+          set -eux
 
-      echo "NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-unset}"
-      nvidia-smi
+          echo "NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-unset}"
+          nvidia-smi
 
-      python3 - <<'PY'
-      import torch
-      print("torch:", torch.__version__)
-      print("cuda available:", torch.cuda.is_available())
-      print("cuda device count:", torch.cuda.device_count())
-      PY
+          rm -f /usr/local/cuda-13.0/compat/libcuda.so* /usr/local/cuda/compat/libcuda.so* || true
+          ldconfig || true
 
-      vllm serve /models/Llama-3.1-8B-Instruct-AWQ \
-        --host 0.0.0.0 --port 8000 \
-        --quantization awq_marlin \
-        --max-model-len 2048 \
-        --gpu-memory-utilization 0.90 \
-        --enforce-eager
+          python3 - <<'PY'
+          import torch
+          print("torch:", torch.__version__)
+          print("cuda available:", torch.cuda.is_available())
+          print("cuda device count:", torch.cuda.device_count())
+          PY
+
+          vllm serve /models/Llama-3.1-8B-Instruct-AWQ \
+            --host 0.0.0.0 --port 8000 \
+            --quantization awq_marlin \
+            --max-model-len 2048 \
+            --gpu-memory-utilization 0.90 \
+            --enforce-eager
