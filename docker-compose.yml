@@ -33,33 +33,27 @@ services:
     ports:
       - "8001:8000"
 
-    entrypoint: ["/bin/bash", "-lc"]
-    command: |
-      set -eux
+    entrypoint: []
+    command:
+      - /bin/bash
+      - -lc
+      - |
+        set -eux
+        echo "NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES}"
+        nvidia-smi
 
-      echo "NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES}"
-      nvidia-smi
+        rm -f /usr/local/cuda-13.0/compat/libcuda.so* /usr/local/cuda/compat/libcuda.so* || true
+        ldconfig || true
 
-      # CUDA compat libcuda.so давхардаж асуудал өгдөг тул (зарим драйвер дээр) арилгаж байна
-      rm -f /usr/local/cuda-13.0/compat/libcuda.so* /usr/local/cuda/compat/libcuda.so* || true
-      ldconfig || true
+        python3 - <<'PY'
+        import torch
+        print("torch:", torch.__version__)
+        print("cuda available:", torch.cuda.is_available())
+        print("cuda device count:", torch.cuda.device_count())
+        PY
 
-      python3 - <<'PY'
-      import torch
-      print("torch:", torch.__version__)
-      print("cuda available:", torch.cuda.is_available())
-      print("cuda device count:", torch.cuda.device_count())
-      PY
-
-      exec vllm serve /models/Llama-3.1-8B-Instruct-AWQ \
-        --host 0.0.0.0 --port 8000 \
-        --quantization awq_marlin \
-        --max-model-len 2048 \
-        --gpu-memory-utilization 0.90
-
-    healthcheck:
-      test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/v1/models', timeout=2).read(); print('ok')\""]
-      interval: 10s
-      timeout: 5s
-      retries: 30
-      start_period: 40s
+        exec vllm serve /models/Llama-3.1-8B-Instruct-AWQ \
+          --host 0.0.0.0 --port 8000 \
+          --quantization awq_marlin \
+          --max-model-len 2048 \
+          --gpu-memory-utilization 0.90
