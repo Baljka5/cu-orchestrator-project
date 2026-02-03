@@ -6,26 +6,23 @@ services:
     environment:
       LLM_BASE_URL: "http://llm:8000"
       LLM_MODEL: "/models/Llama-3.1-8B-Instruct-AWQ"
-      LLM_TIMEOUT: "60"
-      LLM_MAX_TOKENS: "512"
-      LLM_TEMPERATURE: "0.2"
     ports:
       - "8000:8000"
     depends_on:
       llm:
-        condition: service_healthy
+        condition: service_started
 
   llm:
     image: vllm/vllm-openai:v0.15.0-cu130
     ipc: host
     gpus: all
+    restart: unless-stopped
 
     environment:
       NVIDIA_VISIBLE_DEVICES: "all"
       NVIDIA_DRIVER_CAPABILITIES: "compute,utility"
       NVIDIA_DISABLE_CUDA_COMPAT: "1"
       PYTORCH_ALLOC_CONF: "expandable_segments:True"
-      LD_LIBRARY_PATH: "/usr/local/nvidia/lib64:/usr/local/nvidia/lib:/lib/x86_64-linux-gnu"
 
     volumes:
       - ./models:/models
@@ -33,28 +30,16 @@ services:
     ports:
       - "8001:8000"
 
-    entrypoint: ["/bin/bash", "-lc"]
-    command: |
-      set -eux
-      nvidia-smi
-      rm -f /usr/local/cuda-13.0/compat/libcuda.so* /usr/local/cuda/compat/libcuda.so* || true
-      ldconfig || true
-      python3 - <<'PY'
-      import torch
-      print("torch:", torch.__version__)
-      print("cuda available:", torch.cuda.is_available())
-      print("cuda device count:", torch.cuda.device_count())
-      PY
-
-      vllm serve /models/Llama-3.1-8B-Instruct-AWQ \
-        --host 0.0.0.0 --port 8000 \
-        --quantization awq_marlin \
-        --max-model-len 2048 \
-        --gpu-memory-utilization 0.90
-
-    healthcheck:
-      test: ["CMD-SHELL", "python3 - <<'PY'\nimport urllib.request\nu='http://127.0.0.1:8000/v1/models'\ntry:\n  print(urllib.request.urlopen(u, timeout=2).read()[:50])\n  raise SystemExit(0)\nexcept Exception as e:\n  raise SystemExit(1)\nPY"]
-      interval: 10s
-      timeout: 5s
-      retries: 30
-      start_period: 60s
+    command:
+      - serve
+      - /models/Llama-3.1-8B-Instruct-AWQ
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --quantization
+      - awq_marlin
+      - --max-model-len
+      - "2048"
+      - --gpu-memory-utilization
+      - "0.90"
