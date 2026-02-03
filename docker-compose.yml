@@ -1,3 +1,5 @@
+version: "3.9"
+
 services:
   api:
     build: .
@@ -11,7 +13,12 @@ services:
   llm:
     image: vllm/vllm-openai:v0.15.0-cu130
     ipc: host
-    gpus: all
+
+    device_requests:
+      - driver: nvidia
+        count: all
+        capabilities: [gpu]
+
     environment:
       NVIDIA_DRIVER_CAPABILITIES: "compute,utility"
       NVIDIA_DISABLE_CUDA_COMPAT: "1"
@@ -24,16 +31,31 @@ services:
     ports:
       - "8001:8000"
 
-    entrypoint: ["/bin/bash","-lc"]
+    entrypoint: ["/bin/bash", "-lc"]
     command: |
       set -eux
+
+      echo "===== GPU CHECK ====="
       echo "NVIDIA_VISIBLE_DEVICES=$NVIDIA_VISIBLE_DEVICES"
       nvidia-smi
-      rm -f /usr/local/cuda-13.0/compat/libcuda.so* /usr/local/cuda/compat/libcuda.so* || true
+
+      echo "===== CUDA LIB FIX ====="
+      rm -f /usr/local/cuda-13.0/compat/libcuda.so* || true
+      rm -f /usr/local/cuda/compat/libcuda.so* || true
       ldconfig || true
-      python3 -c "import torch; print(torch.__version__); print(torch.cuda.is_available()); print(torch.cuda.device_count())"
+
+      echo "===== TORCH CHECK ====="
+      python3 - <<'PY'
+      import torch
+      print("torch:", torch.__version__)
+      print("cuda available:", torch.cuda.is_available())
+      print("cuda device count:", torch.cuda.device_count())
+      PY
+
+      echo "===== START vLLM ====="
       vllm serve /models/Llama-3.1-8B-Instruct-AWQ \
-        --host 0.0.0.0 --port 8000 \
+        --host 0.0.0.0 \
+        --port 8000 \
         --quantization awq_marlin \
         --max-model-len 2048 \
         --gpu-memory-utilization 0.90 \
