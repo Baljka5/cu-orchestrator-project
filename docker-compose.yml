@@ -15,7 +15,8 @@ services:
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
-      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+      - LD_LIBRARY_PATH=/usr/local/nvidia/lib64:/usr/local/nvidia/lib:/lib/x86_64-linux-gnu
+      - PYTORCH_ALLOC_CONF=expandable_segments:True
     ports:
       - "8001:8000"
     volumes:
