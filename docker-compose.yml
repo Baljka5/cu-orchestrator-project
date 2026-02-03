@@ -9,7 +9,7 @@ services:
       - llm
 
   llm:
-    image: vllm/vllm-openai:v0.15.0-cu128
+    image: vllm/vllm-openai:v0.15.0-cu129
     gpus: all
     ipc: host
     environment:
