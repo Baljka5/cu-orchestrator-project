@@ -11,15 +11,7 @@ services:
   llm:
     image: vllm/vllm-openai:v0.15.0-cu130
     ipc: host
-
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-
+    gpus: all
     environment:
       NVIDIA_DRIVER_CAPABILITIES: "compute,utility"
       NVIDIA_DISABLE_CUDA_COMPAT: "1"
