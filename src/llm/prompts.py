@@ -1,1 +1,0 @@
-# Centralized prompt templates (optional).
