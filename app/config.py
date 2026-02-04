@@ -29,3 +29,10 @@ CLICKHOUSE_PASSWORD = env("CLICKHOUSE_PASSWORD", "")
 CLICKHOUSE_DATABASE = env("CLICKHOUSE_DATABASE", "")
 
 CH_MAX_ROWS = int(env("CH_MAX_ROWS", "200"))
+
+CH_DEFAULT_TABLE = env("CH_DEFAULT_TABLE", "Cluster_Main_Sales")
+CH_DEFAULT_STORE_COL = env("CH_DEFAULT_STORE_COL", "StoreID")
+CH_DEFAULT_DATE_COL = env("CH_DEFAULT_DATE_COL", "SalesDate")
+CH_DEFAULT_METRIC_COL = env("CH_DEFAULT_METRIC_COL", "NetSale")
+
+CH_FALLBACK_TABLES = [x.strip() for x in env("CH_FALLBACK_TABLES", "Cluster_Main_Sales").split(",") if x.strip()]
