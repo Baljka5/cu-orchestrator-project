@@ -66,8 +66,12 @@ async def node_classify(state: OrchestratorState) -> OrchestratorState:
     q = state.normalized_message or state.raw_message
 
     q_up = q.upper()
-    if "CU" in q_up and any(k in q.lower() for k in ["борлуул", "sales", "netsale", "орлого", "оборот"]):
-        state.classification = ClassificationResult(agent="text2sql", confidence=0.95, rationale="rule_sales")
+    q_low = q.lower()
+
+    data_keywords = ["борлуул", "sales", "netsale", "gross", "татвар", "discount", "өртөг", "тоо", "хэд", "тайлан",
+                     "дэлгүүр", "cu"]
+    if any(k in q_low for k in data_keywords) or re.search(r"\bCU\d{3,4}\b", q_up):
+        state.classification = ClassificationResult(agent="text2sql", confidence=0.9, rationale="rule_data")
         return state
 
     schema = {
