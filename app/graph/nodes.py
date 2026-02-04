@@ -9,8 +9,10 @@ from app.agents.research_agent import research_answer
 
 llm = LLMClient()
 
+
 def _clip(text: str) -> str:
     return text[:MAX_INPUT_CHARS]
+
 
 async def node_guard(state: OrchestratorState) -> OrchestratorState:
     msg = _clip(state.raw_message)
@@ -44,11 +46,13 @@ async def node_guard(state: OrchestratorState) -> OrchestratorState:
         state.guard = GuardResult(allowed=True, reason="guard_fallback")
         return state
 
+
 async def node_reformulate(state: OrchestratorState) -> OrchestratorState:
     msg = _clip(state.raw_message)
 
     prompt = [
-        {"role": "system", "content": "You normalize Mongolian user queries for downstream agents. Keep meaning. Output ONLY the normalized query text."},
+        {"role": "system",
+         "content": "You normalize Mongolian user queries for downstream agents. Keep meaning. Output ONLY the normalized query text."},
         {"role": "user", "content": msg}
     ]
     try:
@@ -57,8 +61,14 @@ async def node_reformulate(state: OrchestratorState) -> OrchestratorState:
         state.normalized_message = msg
     return state
 
+
 async def node_classify(state: OrchestratorState) -> OrchestratorState:
     q = state.normalized_message or state.raw_message
+
+    q_up = q.upper()
+    if "CU" in q_up and any(k in q.lower() for k in ["борлуул", "sales", "netsale", "орлого", "оборот"]):
+        state.classification = ClassificationResult(agent="text2sql", confidence=0.95, rationale="rule_sales")
+        return state
 
     schema = {
         "agent": "policy|text2sql|research",
@@ -92,6 +102,7 @@ async def node_classify(state: OrchestratorState) -> OrchestratorState:
 
     return state
 
+
 async def node_run_agent(state: OrchestratorState) -> OrchestratorState:
     agent = (state.classification.agent if state.classification else "research").lower()
     q = state.normalized_message or state.raw_message
@@ -108,6 +119,7 @@ async def node_run_agent(state: OrchestratorState) -> OrchestratorState:
 
     return state
 
+
 async def node_finalize(state: OrchestratorState) -> OrchestratorState:
     if state.guard and not state.guard.allowed:
         state.final_answer = "Уучлаарай, энэ төрлийн хүсэлтэд би хариулах боломжгүй."
@@ -118,7 +130,8 @@ async def node_finalize(state: OrchestratorState) -> OrchestratorState:
     agent_out = state.agent_result
 
     prompt = [
-        {"role": "system", "content": "You are CU Orchestrator. Compose a helpful answer in Mongolian. Be concise and actionable."},
+        {"role": "system",
+         "content": "You are CU Orchestrator. Compose a helpful answer in Mongolian. Be concise and actionable."},
         {"role": "user", "content": f"Question:\n{q}\n\nAgent result:\n{agent_out}\n\nReturn final answer."}
     ]
     try:
