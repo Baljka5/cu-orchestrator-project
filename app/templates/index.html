@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="mn">
+<head>
+  <meta charset="UTF-8" />
+  <title>CU Orchestrator UI</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+
+<div class="container">
+  <h2>🤖 CU Orchestrator</h2>
+
+  <label>Agent сонгох</label>
+  <select id="agent">
+    <option value="auto">AUTO (Orchestrator)</option>
+    <option value="text2sql">Text2SQL</option>
+    <option value="policy">Policy</option>
+    <option value="research">Research</option>
+    <option value="general">General</option>
+  </select>
+
+  <label>Асуулт</label>
+  <textarea id="question" placeholder="Text"></textarea>
+
+  <button onclick="ask()">Асуух</button>
+
+  <h3>Хариу</h3>
+  <pre id="answer">...</pre>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

@@ -7,11 +7,14 @@ graph = build_graph()
 
 @router.post("/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest):
-    state = OrchestratorState(raw_message=req.message)
+    state = OrchestratorState(
+        raw_message=req.message,
+        forced_agent=req.force_agent
+    )
 
     result = await graph.ainvoke(state)
 
-    final_answer = result.get("final_answer") or result.get("agent_result") or "Алдаа гарлаа."
-    meta = result.get("meta") or {}
-
-    return ChatResponse(answer=final_answer, meta=meta)
+    return ChatResponse(
+        answer=result.get("final_answer", "Хариу үүссэнгүй."),
+        meta=result.get("meta", {})
+    )
