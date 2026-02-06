@@ -1,16 +1,11 @@
+import logging
+
 from fastapi import APIRouter
 from app.core.schemas import ChatRequest, ChatResponse, OrchestratorState
 from app.graph.orchestrator import build_graph
 
 router = APIRouter()
-_graph = None
-
-
-def get_graph():
-    global _graph
-    if _graph is None:
-        _graph = build_graph()
-    return _graph
+log = logging.getLogger("cu-orchestrator")
 
 
 @router.post("/chat", response_model=ChatResponse)
@@ -21,18 +16,32 @@ async def chat(req: ChatRequest):
     )
 
     graph = build_graph()
+    result = await graph.ainvoke(state)
 
-    if hasattr(graph, "ainvoke"):
-        result = await graph.ainvoke(state)
+    # DEBUG logs
+    try:
+        if isinstance(result, dict):
+            log.info("GRAPH_RESULT_KEYS=%s", list(result.keys()))
+            log.info("GRAPH_RESULT_META=%s", result.get("meta"))
+        else:
+            log.info("GRAPH_RESULT_TYPE=%s", type(result))
+            log.info("GRAPH_RESULT_STR=%s", str(result)[:800])
+    except Exception:
+        log.exception("Failed to log graph result")
 
-    elif callable(graph):
-        maybe = graph(state)
-        result = await maybe if hasattr(maybe, "__await__") else maybe
+    answer = None
+    meta = {}
 
-    else:
-        raise RuntimeError(f"Invalid graph returned by build_graph(): {type(graph)}")
+    if isinstance(result, dict):
+        meta = result.get("meta") or {}
+        answer = (
+            result.get("final_answer")
+            or result.get("answer")
+            or result.get("output")
+            or result.get("response")
+        )
 
-    return ChatResponse(
-        answer=(result.get("final_answer") if isinstance(result, dict) else None) or "Хариу үүссэнгүй.",
-        meta=(result.get("meta") if isinstance(result, dict) else {}) or {}
-    )
+    if not answer:
+        answer = f"Хариу үүсээгүй байна. meta={meta}"
+
+    return ChatResponse(answer=answer, meta=meta)

@@ -1,33 +1,24 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional, Dict, Any
+
 
 class ChatRequest(BaseModel):
     message: str
     force_agent: Optional[str] = None
 
+
 class ChatResponse(BaseModel):
     answer: str
-    meta: Dict[str, Any] = {}
+    meta: Dict[str, Any] = Field(default_factory=dict)
 
-class GuardResult(BaseModel):
-    allowed: bool
-    reason: Optional[str] = None
-
-class ClassificationResult(BaseModel):
-    agent: str
-    confidence: float
-    rationale: str
 
 class OrchestratorState(BaseModel):
     raw_message: str
     normalized_message: Optional[str] = None
-
     forced_agent: Optional[str] = None
 
-    guard: Optional[GuardResult] = None
-    classification: Optional[ClassificationResult] = None
-
-    agent_result: Optional[str] = None
+    classification: Optional[Dict[str, Any]] = None
     final_answer: Optional[str] = None
 
-    meta: Dict[str, Any] = {}
+    # debugging / extra info
+    meta: Dict[str, Any] = Field(default_factory=dict)
