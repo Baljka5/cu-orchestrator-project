@@ -1,13 +1,13 @@
 import re
 from app.core.schemas import OrchestratorState, ClassificationResult
 from app.core.llm_client import chat_completion
+from app.core.schema_catalog import format_schema_for_prompt
+
 
 async def node_classify(state: OrchestratorState) -> OrchestratorState:
     if state.forced_agent:
         state.classification = ClassificationResult(
-            agent=state.forced_agent,
-            confidence=1.0,
-            rationale="forced_from_ui"
+            agent=state.forced_agent, confidence=1.0, rationale="forced_from_ui"
         )
         state.meta["agent"] = state.forced_agent
         return state
@@ -17,52 +17,54 @@ async def node_classify(state: OrchestratorState) -> OrchestratorState:
     q_up = q.upper()
 
     data_keywords = [
-        "борлуул", "sales", "netsale", "gross",
-        "татвар", "discount", "өртөг",
-        "тоо", "хэд", "тайлан", "дэлгүүр"
+        "борлуул", "sales", "netsale", "gross", "татвар", "discount",
+        "тоо", "хэд", "тайлан", "дэлгүүр", "2025", "2024", "2023"
     ]
 
     if any(k in q_low for k in data_keywords) or re.search(r"\bCU\d{3,4}\b", q_up):
         state.classification = ClassificationResult(
-            agent="text2sql",
-            confidence=0.9,
-            rationale="rule_data_query"
+            agent="text2sql", confidence=0.9, rationale="rule_data_query"
         )
         state.meta["agent"] = "text2sql"
         return state
 
-    if any(k in q_low for k in ["журам", "policy", "дотоод журам"]):
-        state.classification = ClassificationResult(
-            agent="policy",
-            confidence=0.7,
-            rationale="rule_policy"
-        )
-        state.meta["agent"] = "policy"
-        return state
-
-    if any(k in q_low for k in ["судалгаа", "research", "баримт"]):
-        state.classification = ClassificationResult(
-            agent="research",
-            confidence=0.6,
-            rationale="rule_research"
-        )
-        state.meta["agent"] = "research"
-        return state
-
     state.classification = ClassificationResult(
-        agent="general",
-        confidence=0.3,
-        rationale="fallback_general"
+        agent="general", confidence=0.3, rationale="fallback_general"
     )
     state.meta["agent"] = "general"
     return state
 
 
-async def node_run_llm(state: OrchestratorState) -> OrchestratorState:
-    # Энд агент бүрээр өөр prompt хийж болно. Одоохондоо minimal.
-    agent = (state.classification.agent if state.classification else "general")
-    system = f"You are CU Orchestrator assistant. Route={agent}. Reply in Mongolian."
-
+async def node_run_llm_general(state: OrchestratorState) -> OrchestratorState:
+    system = "Та бол CU Orchestrator assistant. Хэрэглэгчийн асуултад товч, тодорхой хариул."
     answer = await chat_completion(state.raw_message, system=system)
-    state.final_answer = answer or "Хариу үүссэнгүй."
+    state.final_answer = answer
+    return state
+
+
+async def node_run_text2sql(state: OrchestratorState) -> OrchestratorState:
+    # For now: always include Cluster_Main_Sales schema (later: retrieve relevant tables dynamically)
+    schema_txt = format_schema_for_prompt(["Cluster_Main_Sales"])
+
+    system = f"""
+Та ClickHouse SQL бичдэг туслах.
+Зөвхөн ClickHouse SQL буцаа (markdown биш, тайлбаргүй).
+Хэрэв асуултад шаардлагатай багана/table schema-д байхгүй бол:
+SELECT 'UNKNOWN_SCHEMA' AS error;
+
+Доорх schema-г ашигла:
+
+{schema_txt}
+
+Дүрэм:
+- Огноо фильтерт SalesDate-г ашигла.
+- Жилийн дүн гэвэл toYear(SalesDate)=YYYY.
+- Борлуулалтын дүн гэвэл sum(NetSale) гэж ойлго.
+- Дэлгүүрээр гэвэл StoreID group by.
+- limit-ийг шаардлагагүй бол бүү нэм.
+""".strip()
+
+    sql = await chat_completion(state.raw_message, system=system)
+    state.final_answer = sql
+    state.meta["mode"] = "sql"
     return state
