@@ -1,91 +1,92 @@
+# app/app/core/llm_client.py
 import os
+from typing import Optional, Dict, Any, List
+
 import httpx
-from typing import Any, Dict, Optional
 
-def _join(base: str, path: str) -> str:
-    base = (base or "").strip().rstrip("/")
-    path = "/" + path.lstrip("/")
-    return base + path
+LLM_BASE_URL = os.getenv("LLM_BASE_URL", "http://host.docker.internal:8001").rstrip("/")
+LLM_MODEL = os.getenv("LLM_MODEL", "llama3-awq")
+LLM_TIMEOUT = float(os.getenv("LLM_TIMEOUT", "60"))
+LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "512"))
+LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.2"))
 
-def _env_float(key: str, default: str) -> float:
+
+def _headers() -> Dict[str, str]:
+    # vLLM-д API key шаардахгүй (ихэнхдээ). Хэрэв хэрэгтэй бол:
+    # token = os.getenv("LLM_API_KEY")
+    # if token: return {"Authorization": f"Bearer {token}"}
+    return {"Content-Type": "application/json"}
+
+
+async def _pick_model(client: httpx.AsyncClient) -> str:
+    """
+    vLLM дээр /v1/models амьд байвал хамгийн эхний model.id-г авч болно.
+    .env дээр LLM_MODEL тохируулсан байвал тэрийг ашиглана.
+    """
+    if LLM_MODEL:
+        return LLM_MODEL
+
     try:
-        return float(os.getenv(key, default))
-    except Exception:
-        return float(default)
-
-def _env_int(key: str, default: str) -> int:
-    try:
-        return int(os.getenv(key, default))
-    except Exception:
-        return int(default)
-
-def _extract_chat_text(data: Dict[str, Any]) -> str:
-    # OpenAI ChatCompletions compatible
-    try:
-        return (data.get("choices") or [{}])[0].get("message", {}).get("content", "") or ""
-    except Exception:
-        return ""
-
-def _extract_responses_text(data: Dict[str, Any]) -> str:
-    # OpenAI Responses API compatible (vLLM returns output_text in several shapes)
-    # Common shapes:
-    # 1) {"output":[{"content":[{"type":"output_text","text":"..."}]}]}
-    # 2) {"output_text":"..."}  (some servers)
-    if isinstance(data.get("output_text"), str) and data["output_text"]:
-        return data["output_text"]
-
-    out = data.get("output")
-    if isinstance(out, list) and out:
-        content = out[0].get("content")
-        if isinstance(content, list):
-            texts = []
-            for c in content:
-                if c.get("type") in ("output_text", "text") and isinstance(c.get("text"), str):
-                    texts.append(c["text"])
-            return "".join(texts).strip()
-    return ""
-
-async def chat_completion(prompt: str, system: str = "You are a helpful assistant.") -> str:
-    base_url = os.getenv("LLM_BASE_URL", "http://localhost:8001")
-    model = os.getenv("LLM_MODEL", "local")
-    timeout = _env_float("LLM_TIMEOUT", "60")
-    temperature = _env_float("LLM_TEMPERATURE", "0.2")
-    max_tokens = _env_int("LLM_MAX_TOKENS", "512")
-
-    chat_url = _join(base_url, "/v1/chat/completions")
-    resp_url = _join(base_url, "/v1/responses")
-
-    chat_payload = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": prompt},
-        ],
-        "temperature": temperature,
-        "max_tokens": max_tokens,
-    }
-
-    # Responses API payload
-    resp_payload = {
-        "model": model,
-        "input": prompt,
-        "temperature": temperature,
-        "max_output_tokens": max_tokens,
-    }
-
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        # 1) Try ChatCompletions
-        r = await client.post(chat_url, json=chat_payload)
-        if r.status_code == 404:
-            # 2) Fallback to Responses
-            r2 = await client.post(resp_url, json=resp_payload)
-            r2.raise_for_status()
-            data2 = r2.json()
-            text2 = _extract_responses_text(data2)
-            return text2 or "Хариу үүссэнгүй."
-
-        # Any other error -> raise
+        r = await client.get(f"{LLM_BASE_URL}/v1/models", headers=_headers())
         r.raise_for_status()
         data = r.json()
-        text = _extract_chat_text(data)
-        return text or "Хариу үүссэнгүй."
+        models = data.get("data") or []
+        if models and isinstance(models, list) and "id" in models[0]:
+            return models[0]["id"]
+    except Exception:
+        pass
+
+    # fallback
+    return "llama3-awq"
+
+
+async def chat_completion(
+    user_message: str,
+    system: Optional[str] = None,
+    temperature: Optional[float] = None,
+    max_tokens: Optional[int] = None,
+) -> str:
+    """
+    vLLM OpenAI-compatible Chat Completions:
+      POST /v1/chat/completions
+    """
+    temp = LLM_TEMPERATURE if temperature is None else temperature
+    mtok = LLM_MAX_TOKENS if max_tokens is None else max_tokens
+
+    messages: List[Dict[str, Any]] = []
+    if system:
+        messages.append({"role": "system", "content": system})
+    messages.append({"role": "user", "content": user_message})
+
+    async with httpx.AsyncClient(timeout=LLM_TIMEOUT) as client:
+        model = await _pick_model(client)
+
+        payload = {
+            "model": model,
+            "messages": messages,
+            "temperature": temp,
+            "max_tokens": mtok,
+        }
+
+        r = await client.post(
+            f"{LLM_BASE_URL}/v1/chat/completions",
+            headers=_headers(),
+            json=payload,
+        )
+        r.raise_for_status()
+        data = r.json()
+
+        # OpenAI format: choices[0].message.content
+        choices = data.get("choices") or []
+        if choices and "message" in choices[0]:
+            msg = choices[0]["message"]
+            if isinstance(msg, dict):
+                content = msg.get("content")
+                if isinstance(content, str) and content.strip():
+                    return content.strip()
+
+        # fallback (зарим серверүүд choices[0].text гэж буцааж магадгүй)
+        if choices and "text" in choices[0] and isinstance(choices[0]["text"], str):
+            return choices[0]["text"].strip()
+
+        return "Хариу үүссэнгүй."
