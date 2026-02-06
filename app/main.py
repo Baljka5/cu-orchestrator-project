@@ -1,21 +1,18 @@
 from fastapi import FastAPI
+from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
+from app.config import APP_NAME
+from app.core.logging import setup_logging
+from app.api.routes import router
 
-from app.api.routes import router as api_router
-from app.api.ui import router as ui_router
+setup_logging()
 
-app = FastAPI(
-    title="CU Orchestrator",
-    version="1.0.0"
-)
+app = FastAPI(title=APP_NAME)
+app.include_router(router, prefix="/api")
 
-# API
-app.include_router(api_router, prefix="/api")
+app.mount("/ui", StaticFiles(directory="/app/ui", html=True), name="ui")
 
-# UI
-app.include_router(ui_router)
-
-# Static + templates
-app.mount("/static", StaticFiles(directory="app/static"), name="static")
-templates = Jinja2Templates(directory="app/templates")
+@app.get("/", response_class=HTMLResponse)
+def home():
+    with open("/app/ui/index.html", "r", encoding="utf-8") as f:
+        return f.read()
