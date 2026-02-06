@@ -8,6 +8,8 @@ services:
     volumes:
       - ./app:/app/app
       - ./ui:/app/ui
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 #    depends_on:
 #      - llm
 #
