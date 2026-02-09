@@ -14,6 +14,9 @@ from app.config import CH_DEFAULT_TABLE, CH_DEFAULT_STORE_COL, CH_DEFAULT_DATE_C
 
 from datetime import date, timedelta
 from app.config import CH_FALLBACK_TABLES
+from typing import Any, Dict, List, Optional
+
+
 
 
 llm = LLMClient()
@@ -143,6 +146,167 @@ def _tables_in_sql(sql: str) -> set[str]:
     for m in re.finditer(r"\b(from|join)\s+([a-zA-Z0-9_\.]+)", sql, flags=re.IGNORECASE):
         found.add(m.group(2))
     return found
+
+async def text2sql_execute(query: str) -> Dict[str, Any]:
+    """
+    SQL үүсгээд ClickHouse дээр ажиллуулаад structured үр дүн буцаана.
+    Return:
+      {
+        "sql": "...",
+        "notes": "...",
+        "columns": [...],
+        "rows": [...],
+        "row_count": int,
+        "mode": "sql_result"
+      }
+    """
+    # existing logic-г ашиглаж: дээрх text2sql_answer() шиг LLM + fallback-ууд
+    candidates = _registry.search(query, top_k=8)
+    if not candidates:
+        return {
+            "sql": "",
+            "notes": "Dictionary дээрээс тохирох хүснэгт олдсонгүй.",
+            "columns": [],
+            "rows": [],
+            "row_count": 0,
+            "mode": "sql_result",
+        }
+
+    schema_ctx = []
+    for t in candidates[:5]:
+        cols = [{"name": c.name, "type": c.dtype, "desc": c.attr} for c in t.columns[:60]]
+        schema_ctx.append({
+            "db": t.db,
+            "table": t.table,
+            "entity": t.entity,
+            "description": (t.description or "")[:200],
+            "columns": cols
+        })
+
+    allowed_tables = set()
+    for t in candidates[:8]:
+        allowed_tables.add(t.table)
+        allowed_tables.add(f"{t.db}.{t.table}")
+
+    client = _ch_client()
+
+    # --- 1) LLM SQL try
+    try:
+        prompt = [
+            {"role": "system", "content":
+                "You generate SAFE ClickHouse SELECT queries. Reply ONLY JSON.\n"
+                "Rules:\n"
+                "- Only SELECT (no DDL/DML)\n"
+                "- Prefer the provided tables/columns\n"
+                "- Always include a LIMIT\n"
+                "- If unclear, return exploratory SELECT * LIMIT 20 on the best candidate table.\n"
+                "Output JSON: {\"sql\":\"...\",\"notes\":\"...\"}"
+            },
+            {"role": "user", "content": json.dumps({
+                "question": query,
+                "database_hint": CLICKHOUSE_DATABASE,
+                "candidates": schema_ctx
+            }, ensure_ascii=False)}
+        ]
+
+        out = await llm.chat(prompt, temperature=0.0, max_tokens=550)
+        m = re.search(r"\{.*\}", out, re.DOTALL)
+        data = json.loads(m.group(0) if m else out)
+
+        sql = (data.get("sql") or "").strip()
+        notes = (data.get("notes") or "").strip()
+
+        if not _is_safe_sql(sql):
+            raise ValueError("unsafe_sql")
+
+        sql = _enforce_limit(sql, max(10, min(CH_MAX_ROWS, 1000)))
+
+        used = _tables_in_sql(sql)
+        if used and not all(u in allowed_tables for u in used):
+            raise ValueError(f"table_not_allowed: {sorted(list(used))}")
+
+        res = client.query(sql)
+        return {
+            "sql": sql,
+            "notes": notes,
+            "columns": res.column_names,
+            "rows": res.result_rows[:min(len(res.result_rows), CH_MAX_ROWS)],
+            "row_count": len(res.result_rows),
+            "mode": "sql_result",
+        }
+
+    except Exception as llm_err:
+        # --- 2) fallback: RULE aggregation (store + metric)
+        store = _extract_store_any(query)
+        days = _extract_days_any(query)
+        metric = _pick_metric_any(query)
+
+        end_d = date.today()
+        start_d = end_d - timedelta(days=days - 1)
+
+        candidate_tables = []
+        for t in candidates[:5]:
+            candidate_tables.append(t.table)
+            candidate_tables.append(f"{t.db}.{t.table}")
+        candidate_tables += CH_FALLBACK_TABLES
+
+        if store:
+            for tbl in candidate_tables:
+                sql_a = f"""
+                SELECT
+                  SalesDate AS day,
+                  sum({metric}) AS value
+                FROM {tbl}
+                WHERE StoreID = %(store)s
+                  AND SalesDate >= %(start)s
+                  AND SalesDate <= %(end)s
+                GROUP BY day
+                ORDER BY day DESC
+                LIMIT {min(200, CH_MAX_ROWS)}
+                """
+                try:
+                    res = client.query(sql_a, parameters={
+                        "store": store,
+                        "start": str(start_d),
+                        "end": str(end_d),
+                    })
+                    if res.result_rows:
+                        return {
+                            "sql": sql_a.strip(),
+                            "notes": f"Fallback RULE aggregation (LLM failed: {type(llm_err).__name__})",
+                            "columns": res.column_names,
+                            "rows": res.result_rows[:min(len(res.result_rows), CH_MAX_ROWS)],
+                            "row_count": len(res.result_rows),
+                            "mode": "sql_result",
+                        }
+                except Exception:
+                    continue
+
+        # --- 3) fallback: sample rows
+        for tbl in candidate_tables:
+            sql_b = f"SELECT * FROM {tbl} LIMIT 20"
+            try:
+                res = client.query(sql_b)
+                if res.result_rows:
+                    return {
+                        "sql": sql_b,
+                        "notes": f"Fallback SAMPLE rows (LLM failed: {type(llm_err).__name__})",
+                        "columns": res.column_names,
+                        "rows": res.result_rows,
+                        "row_count": len(res.result_rows),
+                        "mode": "sql_result",
+                    }
+            except Exception:
+                continue
+
+        return {
+            "sql": "",
+            "notes": f"Text2SQL failed. LLM error: {str(llm_err)}",
+            "columns": [],
+            "rows": [],
+            "row_count": 0,
+            "mode": "sql_result",
+        }
 
 async def text2sql_answer(query: str) -> str:
 
@@ -323,4 +487,5 @@ async def text2sql_answer(query: str) -> str:
             for t in candidates[:3]:
                 out += f"- {t.db}.{t.table}\n"
             return out
+
 

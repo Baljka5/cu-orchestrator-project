@@ -1,31 +1,42 @@
 <!DOCTYPE html>
 <html lang="mn">
 <head>
-  <meta charset="UTF-8" />
-  <title>CU Orchestrator UI</title>
-  <link rel="stylesheet" href="/static/style.css" />
+    <meta charset="UTF-8"/>
+    <title>CU Orchestrator UI</title>
+    <link rel="stylesheet" href="/static/style.css"/>
 </head>
 <body>
 
 <div class="container">
-  <h2>🤖 CU Orchestrator</h2>
+    <h2>🤖 CU Orchestrator</h2>
 
-  <label>Agent сонгох</label>
-  <select id="agent">
-    <option value="auto">AUTO (Orchestrator)</option>
-    <option value="text2sql">Text2SQL</option>
-    <option value="policy">Policy</option>
-    <option value="research">Research</option>
-    <option value="general">General</option>
-  </select>
+    <label>Agent сонгох</label>
+    <select id="agent">
+        <option value="auto">AUTO (Orchestrator)</option>
+        <option value="text2sql">Text2SQL</option>
+        <option value="policy">Policy</option>
+        <option value="research">Research</option>
+        <option value="general">General</option>
+    </select>
 
-  <label>Асуулт</label>
-  <textarea id="question" placeholder="Text"></textarea>
+    <label>Асуулт</label>
+    <textarea id="question" placeholder="Text"></textarea>
 
-  <button onclick="ask()">Асуух</button>
+    <button onclick="ask()">Асуух</button>
 
-  <h3>Хариу</h3>
-  <pre id="answer">...</pre>
+    <h3>Хариу</h3>
+    <pre id="answer">...</pre>
+    <h3>Query</h3>
+    <pre id="sql">...</pre>
+
+    <div id="notes" style="margin-top:10px; opacity:0.8;"></div>
+
+    <div id="resultBox" style="margin-top:16px; display:none;">
+        <h3>Үр дүн</h3>
+        <div style="overflow:auto;">
+            <table id="resultTable" border="1" cellpadding="6" cellspacing="0"></table>
+        </div>
+    </div>
 </div>
 
 <script src="/static/app.js"></script>
