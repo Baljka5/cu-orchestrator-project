@@ -13,6 +13,10 @@ class ChatResponse(BaseModel):
     answer: str
     meta: Dict[str, Any] = Field(default_factory=dict)
 
+    sql: Optional[str] = None
+    columns: list[str] = Field(default_factory=list)
+    rows: list[list[Any]] = Field(default_factory=list)
+
 
 class ClassificationResult(BaseModel):
     agent: str = "general"
