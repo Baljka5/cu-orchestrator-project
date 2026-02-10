@@ -2,7 +2,6 @@ import re
 from app.core.schemas import OrchestratorState, ClassificationResult
 from app.core.llm_client import chat_completion
 from app.core.schema_catalog import format_schema_for_prompt
-from app.agents.text2sql_agent import text2sql_execute
 
 
 async def node_classify(state: OrchestratorState) -> OrchestratorState:
@@ -44,31 +43,28 @@ async def node_run_llm_general(state: OrchestratorState) -> OrchestratorState:
 
 
 async def node_run_text2sql(state: OrchestratorState) -> OrchestratorState:
-    result = await text2sql_execute(state.raw_message)
+    # For now: always include Cluster_Main_Sales schema (later: retrieve relevant tables dynamically)
+    schema_txt = format_schema_for_prompt(["Cluster_Main_Sales"])
 
-    sql = (result.get("sql") or "").strip()
-    notes = (result.get("notes") or "").strip()
-    row_count = int(result.get("row_count") or 0)
+    system = f"""
+Та ClickHouse SQL бичдэг туслах.
+Зөвхөн ClickHouse SQL буцаа (markdown биш, тайлбаргүй).
+Хэрэв асуултад шаардлагатай багана/table schema-д байхгүй бол:
+SELECT 'UNKNOWN_SCHEMA' AS error;
 
-    if sql and row_count > 0:
-        state.final_answer = f"Амжилттай. {row_count} мөрийн үр дүн олдлоо."
-        if notes:
-            state.final_answer += f" ({notes})"
-    elif sql and row_count == 0:
-        state.final_answer = "Query ажилласан ч үр дүн хоосон байна."
-        if notes:
-            state.final_answer += f" ({notes})"
-    else:
-        state.final_answer = "SQL үүссэнгүй."
-        if notes:
-            state.final_answer += f" ({notes})"
+Доорх schema-г ашигла:
 
-    # 2) Meta дээр query + data
-    state.meta["mode"] = result.get("mode", "sql_result")
-    state.meta["sql"] = sql
-    state.meta["notes"] = notes
-    state.meta["columns"] = result.get("columns", [])
-    state.meta["rows"] = result.get("rows", [])
-    state.meta["row_count"] = row_count
+{schema_txt}
 
+Дүрэм:
+- Огноо фильтерт SalesDate-г ашигла.
+- Жилийн дүн гэвэл toYear(SalesDate)=YYYY.
+- Борлуулалтын дүн гэвэл sum(NetSale) гэж ойлго.
+- Дэлгүүрээр гэвэл StoreID group by.
+- limit-ийг шаардлагагүй бол бүү нэм.
+""".strip()
+
+    sql = await chat_completion(state.raw_message, system=system)
+    state.final_answer = sql
+    state.meta["mode"] = "sql"
     return state
