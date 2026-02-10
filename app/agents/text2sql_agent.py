@@ -15,18 +15,20 @@ from app.config import CH_DEFAULT_TABLE, CH_DEFAULT_STORE_COL, CH_DEFAULT_DATE_C
 from datetime import date, timedelta
 from app.config import CH_FALLBACK_TABLES
 
-
 llm = LLMClient()
 
 _registry = SchemaRegistry(SCHEMA_DICT_PATH)
 _registry.load()
 
+
 def _try_query(client, sql: str, params: dict | None = None):
     return client.query(sql, parameters=params or {})
+
 
 def _extract_store_any(q: str):
     m = re.search(r"(CU\d{3,4})", q.upper())
     return m.group(1) if m else None
+
 
 def _extract_days_any(q: str) -> int:
     ql = q.lower()
@@ -37,6 +39,7 @@ def _extract_days_any(q: str) -> int:
     if "7 хоног" in ql or "7хоног" in ql: return 7
     if "30 хоног" in ql or "30хоног" in ql: return 30
     return 7
+
 
 def _pick_metric_any(q: str) -> str:
     ql = q.lower()
@@ -55,9 +58,12 @@ def _ch_client():
         password=CLICKHOUSE_PASSWORD,
         database=CLICKHOUSE_DATABASE,
     )
+
+
 def _extract_store(q: str):
     m = re.search(r"(CU\d{3,4})", q.upper())
     return m.group(1) if m else None
+
 
 def _extract_days(q: str) -> int:
     ql = q.lower()
@@ -69,11 +75,12 @@ def _extract_days(q: str) -> int:
     if "өнөөдөр" in ql: return 1
     return 7
 
+
 def _rule_sql(query: str) -> tuple[str, str]:
     store = _extract_store(query)
     days = _extract_days(query)
     end_d = date.today()
-    start_d = end_d - timedelta(days=days-1)
+    start_d = end_d - timedelta(days=days - 1)
 
     # metric select
     ql = query.lower()
@@ -116,6 +123,7 @@ def _rule_sql(query: str) -> tuple[str, str]:
     notes = "RULE fallback: store код олдсонгүй, default table дээрээс recent 20 мөр харууллаа."
     return sql, notes
 
+
 def _is_safe_sql(sql: str) -> bool:
     if not sql:
         return False
@@ -132,11 +140,13 @@ def _is_safe_sql(sql: str) -> bool:
 
     return True
 
+
 def _enforce_limit(sql: str, max_rows: int) -> str:
     s = sql.strip().rstrip(";")
     if re.search(r"\blimit\b", s, flags=re.IGNORECASE):
         return s
     return f"{s}\nLIMIT {max_rows}"
+
 
 def _tables_in_sql(sql: str) -> set[str]:
     found = set()
@@ -144,8 +154,8 @@ def _tables_in_sql(sql: str) -> set[str]:
         found.add(m.group(2))
     return found
 
-async def text2sql_answer(query: str) -> str:
 
+async def text2sql_answer(query: str) -> str:
     # ----------------------------
     # 1) Find candidate tables from dictionary
     # ----------------------------
@@ -185,11 +195,12 @@ async def text2sql_answer(query: str) -> str:
                 "You generate SAFE ClickHouse SELECT queries. Reply ONLY JSON.\n"
                 "Rules:\n"
                 "- Only SELECT (no DDL/DML)\n"
-                "- Prefer the provided tables/columns\n"
-                "- Always include a LIMIT\n"
-                "- If unclear, return exploratory SELECT * LIMIT 20 on the best candidate table.\n"
-                "Output JSON: {\"sql\":\"...\",\"notes\":\"...\"}"
-            },
+                "- Use ONLY these tables: " + ", ".join(sorted(list(allowed_tables))) + "\n"
+                                                                                        "- Prefer provided candidates schema\n"
+                                                                                        "- Always include a LIMIT\n"
+                                                                                        "- If unclear, exploratory SELECT * LIMIT 20 on best candidate.\n"
+                                                                                        "Output JSON: {\"sql\":\"...\",\"notes\":\"...\"}"
+             },
             {"role": "user", "content": json.dumps({
                 "question": query,
                 "database_hint": CLICKHOUSE_DATABASE,
@@ -275,9 +286,9 @@ async def text2sql_answer(query: str) -> str:
                             rows = res.result_rows[:50]
                             lines = [" | ".join(cols)] + [" | ".join(map(str, r)) for r in rows]
                             return (
-                                "Text2SQL fallback (RULE aggregation) \n"
-                                f"Reason: LLM/SQL failed ({type(llm_err).__name__})\n"
-                                f"SQL:\n{sql_a}\n\nDATA:\n" + "\n".join(lines)
+                                    "Text2SQL fallback (RULE aggregation) \n"
+                                    f"Reason: LLM/SQL failed ({type(llm_err).__name__})\n"
+                                    f"SQL:\n{sql_a}\n\nDATA:\n" + "\n".join(lines)
                             )
                     except Exception:
                         continue
@@ -294,9 +305,9 @@ async def text2sql_answer(query: str) -> str:
                         rows = res.result_rows[:20]
                         lines = [" | ".join(cols)] + [" | ".join(map(str, r)) for r in rows]
                         return (
-                            "Text2SQL fallback (SAMPLE rows) \n"
-                            f"Reason: LLM/aggregation failed ({type(llm_err).__name__})\n"
-                            f"SQL:\n{sql_b}\n\nDATA:\n" + "\n".join(lines)
+                                "Text2SQL fallback (SAMPLE rows) \n"
+                                f"Reason: LLM/aggregation failed ({type(llm_err).__name__})\n"
+                                f"SQL:\n{sql_b}\n\nDATA:\n" + "\n".join(lines)
                         )
                 except Exception:
                     continue
@@ -323,4 +334,3 @@ async def text2sql_answer(query: str) -> str:
             for t in candidates[:3]:
                 out += f"- {t.db}.{t.table}\n"
             return out
-
