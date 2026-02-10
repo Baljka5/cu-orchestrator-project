@@ -12,17 +12,10 @@ LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.2"))
 
 
 def _headers() -> Dict[str, str]:
-    # vLLM-д API key шаардахгүй (ихэнхдээ). Хэрэв хэрэгтэй бол:
-    # token = os.getenv("LLM_API_KEY")
-    # if token: return {"Authorization": f"Bearer {token}"}
     return {"Content-Type": "application/json"}
 
 
 async def _pick_model(client: httpx.AsyncClient) -> str:
-    """
-    vLLM дээр /v1/models амьд байвал хамгийн эхний model.id-г авч болно.
-    .env дээр LLM_MODEL тохируулсан байвал тэрийг ашиглана.
-    """
     if LLM_MODEL:
         return LLM_MODEL
 
@@ -36,7 +29,6 @@ async def _pick_model(client: httpx.AsyncClient) -> str:
     except Exception:
         pass
 
-    # fallback
     return "llama3-awq"
 
 
@@ -46,10 +38,6 @@ async def chat_completion(
     temperature: Optional[float] = None,
     max_tokens: Optional[int] = None,
 ) -> str:
-    """
-    vLLM OpenAI-compatible Chat Completions:
-      POST /v1/chat/completions
-    """
     temp = LLM_TEMPERATURE if temperature is None else temperature
     mtok = LLM_MAX_TOKENS if max_tokens is None else max_tokens
 
@@ -76,7 +64,6 @@ async def chat_completion(
         r.raise_for_status()
         data = r.json()
 
-        # OpenAI format: choices[0].message.content
         choices = data.get("choices") or []
         if choices and "message" in choices[0]:
             msg = choices[0]["message"]
@@ -85,7 +72,6 @@ async def chat_completion(
                 if isinstance(content, str) and content.strip():
                     return content.strip()
 
-        # fallback (зарим серверүүд choices[0].text гэж буцааж магадгүй)
         if choices and "text" in choices[0] and isinstance(choices[0]["text"], str):
             return choices[0]["text"].strip()
 

@@ -1,14 +1,17 @@
+# app/core/schema_registry.py
 import os
 import re
 from dataclasses import dataclass
 from typing import Dict, List, Tuple, Optional
 from openpyxl import load_workbook
 
+
 @dataclass
 class ColumnInfo:
     name: str
     dtype: str
     attr: str
+
 
 @dataclass
 class TableInfo:
@@ -18,6 +21,7 @@ class TableInfo:
     entity: str
     description: str
     columns: List[ColumnInfo]
+
 
 class SchemaRegistry:
     def __init__(self, xlsx_path: str):
@@ -31,11 +35,9 @@ class SchemaRegistry:
 
         wb = load_workbook(self.xlsx_path, data_only=True)
 
-
         sh_table = wb["Table"]
         sh_col = wb["Column"]
 
-        # --- Parse Table sheet ---
         header = [c.value for c in next(sh_table.iter_rows(min_row=1, max_row=1))]
         col_map = {name: i for i, name in enumerate(header) if name}
 
@@ -62,7 +64,6 @@ class SchemaRegistry:
                 "columns": []
             }
 
-        # --- Parse Column sheet ---
         header2 = [c.value for c in next(sh_col.iter_rows(min_row=1, max_row=1))]
         col_map2 = {name: i for i, name in enumerate(header2) if name}
 
@@ -94,9 +95,7 @@ class SchemaRegistry:
                 attr=str(attr).strip()
             ))
 
-        self.tables = [
-            TableInfo(**t) for t in table_rows.values()
-        ]
+        self.tables = [TableInfo(**t) for t in table_rows.values()]
 
         self._index = []
         for t in self.tables:
@@ -106,6 +105,27 @@ class SchemaRegistry:
                 " ".join([c.attr for c in t.columns])
             ]).lower()
             self._index.append((blob, t))
+
+    def highlights(self, t: TableInfo) -> Dict[str, List[str]]:
+        """
+        Helpful hints for LLM:
+        - date columns
+        - store/location columns
+        - metric-ish columns
+        """
+        cols = [c.name for c in t.columns]
+        lc = [x.lower() for x in cols]
+
+        date_cols = [cols[i] for i, x in enumerate(lc) if "date" in x or x.endswith("_dt") or x.endswith("dt")]
+        store_cols = [cols[i] for i, x in enumerate(lc) if x in ("storeid", "store_id", "bizloc_cd", "location", "locationid")]
+        metric_cols = [cols[i] for i, x in enumerate(lc) if x in ("netsale", "grosssale", "tax_vat", "discount", "actualcost", "soldqty", "qty")]
+
+        # keep short
+        return {
+            "date_cols": date_cols[:6],
+            "store_cols": store_cols[:6],
+            "metric_cols": metric_cols[:10],
+        }
 
     def search(self, query: str, top_k: int = 8) -> List[TableInfo]:
         q = (query or "").lower().strip()

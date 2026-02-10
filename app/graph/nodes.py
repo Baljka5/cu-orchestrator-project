@@ -43,7 +43,6 @@ async def node_run_llm_general(state: OrchestratorState) -> OrchestratorState:
 
 
 async def node_run_text2sql(state: OrchestratorState) -> OrchestratorState:
-    # For now: always include Cluster_Main_Sales schema (later: retrieve relevant tables dynamically)
     schema_txt = format_schema_for_prompt(["Cluster_Main_Sales"])
 
     system = f"""
