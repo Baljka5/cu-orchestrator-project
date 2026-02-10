@@ -1,40 +1,10 @@
-# app/graph/nodes.py
 import re
-
 from app.core.schemas import OrchestratorState, ClassificationResult
-from app.core.schema_registry import SchemaRegistry
-from app.config import SCHEMA_DICT_PATH
 from app.core.llm_client import chat_completion
-from app.agents.text2sql_agent import text2sql_answer
-
-# Dictionary schema registry (xlsx)
-_registry = SchemaRegistry(SCHEMA_DICT_PATH)
-_registry.load()
-
-
-def _build_schema_text_from_candidates(candidates, max_tables: int = 5, max_cols: int = 60) -> str:
-    parts = []
-    for t in candidates[:max_tables]:
-        cols = "\n".join(
-            [f"- {c.name} ({c.dtype}): {c.attr}" for c in t.columns[:max_cols]]
-        )
-        parts.append(
-            f"DB: {t.db}\n"
-            f"TABLE: {t.table}\n"
-            f"ENTITY: {t.entity}\n"
-            f"DESC: {t.description}\n"
-            f"COLUMNS:\n{cols}\n"
-        )
-    return "\n".join(parts).strip()
+from app.core.schema_catalog import format_schema_for_prompt
 
 
 async def node_classify(state: OrchestratorState) -> OrchestratorState:
-    """
-    Simple rule-based classifier:
-    - forced_agent байвал шууд тэрийг ашиглана
-    - sales / store / date keywords байвал text2sql
-    - бусад үед general
-    """
     if state.forced_agent:
         state.classification = ClassificationResult(
             agent=state.forced_agent, confidence=1.0, rationale="forced_from_ui"
@@ -48,8 +18,7 @@ async def node_classify(state: OrchestratorState) -> OrchestratorState:
 
     data_keywords = [
         "борлуул", "sales", "netsale", "gross", "татвар", "discount",
-        "тоо", "хэд", "тайлан", "дэлгүүр", "store", "2025", "2024", "2023",
-        "item", "product", "sku", "promo", "promotion"
+        "тоо", "хэд", "тайлан", "дэлгүүр", "2025", "2024", "2023"
     ]
 
     if any(k in q_low for k in data_keywords) or re.search(r"\bCU\d{3,4}\b", q_up):
@@ -70,17 +39,32 @@ async def node_run_llm_general(state: OrchestratorState) -> OrchestratorState:
     system = "Та бол CU Orchestrator assistant. Хэрэглэгчийн асуултад товч, тодорхой хариул."
     answer = await chat_completion(state.raw_message, system=system)
     state.final_answer = answer
-    state.meta["mode"] = "text"
     return state
 
 
 async def node_run_text2sql(state: OrchestratorState) -> OrchestratorState:
-    q = (state.normalized_message or state.raw_message or "").strip()
+    # For now: always include Cluster_Main_Sales schema (later: retrieve relevant tables dynamically)
+    schema_txt = format_schema_for_prompt(["Cluster_Main_Sales"])
 
-    # ✅ энэ нь ClickHouse руу query гүйцэтгэж SQL + DATA буцаана
-    answer = await text2sql_answer(q)
+    system = f"""
+Та ClickHouse SQL бичдэг туслах.
+Зөвхөн ClickHouse SQL буцаа (markdown биш, тайлбаргүй).
+Хэрэв асуултад шаардлагатай багана/table schema-д байхгүй бол:
+SELECT 'UNKNOWN_SCHEMA' AS error;
 
-    state.final_answer = answer
-    state.meta["agent"] = "text2sql"
-    state.meta["mode"] = "sql"  # routes.py танина
+Доорх schema-г ашигла:
+
+{schema_txt}
+
+Дүрэм:
+- Огноо фильтерт SalesDate-г ашигла.
+- Жилийн дүн гэвэл toYear(SalesDate)=YYYY.
+- Борлуулалтын дүн гэвэл sum(NetSale) гэж ойлго.
+- Дэлгүүрээр гэвэл StoreID group by.
+- limit-ийг шаардлагагүй бол бүү нэм.
+""".strip()
+
+    sql = await chat_completion(state.raw_message, system=system)
+    state.final_answer = sql
+    state.meta["mode"] = "sql"
     return state

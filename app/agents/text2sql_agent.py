@@ -1,29 +1,50 @@
-# app/agents/text2sql_agent.py
-# -*- coding: utf-8 -*-
-
 import re
 import json
-from datetime import date, timedelta
-from typing import Optional, Dict, Any, List, Tuple
-
 import clickhouse_connect
 
 from app.config import (
-    CLICKHOUSE_HOST,
-    CLICKHOUSE_PORT,
-    CLICKHOUSE_USER,
-    CLICKHOUSE_PASSWORD,
-    CLICKHOUSE_DATABASE,
-    CH_MAX_ROWS,
-    SCHEMA_DICT_PATH,
-    CH_FALLBACK_TABLES,
+    CLICKHOUSE_HOST, CLICKHOUSE_PORT, CLICKHOUSE_USER, CLICKHOUSE_PASSWORD, CLICKHOUSE_DATABASE,
+    CH_MAX_ROWS, SCHEMA_DICT_PATH
 )
-
-from app.core.llm_client import chat_completion
+from app.core.llm import LLMClient
 from app.core.schema_registry import SchemaRegistry
+
+from datetime import date, timedelta
+from app.config import CH_DEFAULT_TABLE, CH_DEFAULT_STORE_COL, CH_DEFAULT_DATE_COL, CH_DEFAULT_METRIC_COL
+
+from datetime import date, timedelta
+from app.config import CH_FALLBACK_TABLES
+
+
+llm = LLMClient()
 
 _registry = SchemaRegistry(SCHEMA_DICT_PATH)
 _registry.load()
+
+def _try_query(client, sql: str, params: dict | None = None):
+    return client.query(sql, parameters=params or {})
+
+def _extract_store_any(q: str):
+    m = re.search(r"(CU\d{3,4})", q.upper())
+    return m.group(1) if m else None
+
+def _extract_days_any(q: str) -> int:
+    ql = q.lower()
+    if "өнөөдөр" in ql: return 1
+    if "өчигдөр" in ql: return 2
+    m = re.search(r"(\d+)\s*(хоног|өдөр)", ql)
+    if m: return max(1, min(int(m.group(1)), 90))
+    if "7 хоног" in ql or "7хоног" in ql: return 7
+    if "30 хоног" in ql or "30хоног" in ql: return 30
+    return 7
+
+def _pick_metric_any(q: str) -> str:
+    ql = q.lower()
+    if any(k in ql for k in ["gross", "grosssale", "нийт"]): return "GrossSale"
+    if any(k in ql for k in ["татвар", "vat", "tax"]): return "Tax_VAT"
+    if any(k in ql for k in ["хөнгөлөлт", "discount"]): return "Discount"
+    if any(k in ql for k in ["өртөг", "cost", "actualcost"]): return "ActualCost"
+    return "NetSale"
 
 
 def _ch_client():
@@ -34,26 +55,88 @@ def _ch_client():
         password=CLICKHOUSE_PASSWORD,
         database=CLICKHOUSE_DATABASE,
     )
+def _extract_store(q: str):
+    m = re.search(r"(CU\d{3,4})", q.upper())
+    return m.group(1) if m else None
 
+def _extract_days(q: str) -> int:
+    ql = q.lower()
+    m = re.search(r"(\d+)\s*(хоног|өдөр)", ql)
+    if m:
+        return max(1, min(int(m.group(1)), 90))
+    if "7 хоног" in ql: return 7
+    if "30 хоног" in ql: return 30
+    if "өнөөдөр" in ql: return 1
+    return 7
+
+def _rule_sql(query: str) -> tuple[str, str]:
+    store = _extract_store(query)
+    days = _extract_days(query)
+    end_d = date.today()
+    start_d = end_d - timedelta(days=days-1)
+
+    # metric select
+    ql = query.lower()
+    metric = CH_DEFAULT_METRIC_COL
+    if "gross" in ql or "grosssale" in ql or "нийт" in ql:
+        metric = "GrossSale"
+    if "татвар" in ql or "vat" in ql or "tax" in ql:
+        metric = "Tax_VAT"
+    if "хөнгөлөлт" in ql or "discount" in ql:
+        metric = "Discount"
+    if "өртөг" in ql or "cost" in ql:
+        metric = "ActualCost"
+
+    table = CH_DEFAULT_TABLE
+    store_col = CH_DEFAULT_STORE_COL
+    date_col = CH_DEFAULT_DATE_COL
+
+    if store:
+        sql = f"""
+        SELECT
+          {date_col} AS day,
+          sum({metric}) AS value
+        FROM {table}
+        WHERE {store_col} = %(store)s
+          AND {date_col} >= %(start)s
+          AND {date_col} <= %(end)s
+        GROUP BY day
+        ORDER BY day DESC
+        LIMIT {min(200, CH_MAX_ROWS)}
+        """
+        notes = f"RULE fallback: {store} / {metric} / {start_d}→{end_d} (daily sum)"
+        return sql, notes
+
+    sql = f"""
+    SELECT *
+    FROM {table}
+    ORDER BY {date_col} DESC
+    LIMIT 20
+    """
+    notes = "RULE fallback: store код олдсонгүй, default table дээрээс recent 20 мөр харууллаа."
+    return sql, notes
 
 def _is_safe_sql(sql: str) -> bool:
     if not sql:
         return False
     s = sql.strip().lower()
+
+    # must start with select
     if not s.startswith("select"):
         return False
-    banned = ["insert", "update", "delete", "drop", "truncate", "alter", "create", "attach", "detach"]
-    return not any(b in s for b in banned)
 
+    # block dangerous keywords
+    banned = ["insert", "update", "delete", "drop", "truncate", "alter", "create", "attach", "detach"]
+    if any(b in s for b in banned):
+        return False
+
+    return True
 
 def _enforce_limit(sql: str, max_rows: int) -> str:
-    s = (sql or "").strip().rstrip(";")
-    if not s:
-        return s
+    s = sql.strip().rstrip(";")
     if re.search(r"\blimit\b", s, flags=re.IGNORECASE):
         return s
     return f"{s}\nLIMIT {max_rows}"
-
 
 def _tables_in_sql(sql: str) -> set[str]:
     found = set()
@@ -61,354 +144,183 @@ def _tables_in_sql(sql: str) -> set[str]:
         found.add(m.group(2))
     return found
 
-
-def _extract_store_any(q: str) -> Optional[str]:
-    m = re.search(r"(CU\d{3,4})", (q or "").upper())
-    return m.group(1) if m else None
-
-
-def _extract_days_any(q: str) -> int:
-    ql = (q or "").lower()
-    if "өнөөдөр" in ql:
-        return 1
-    if "өчигдөр" in ql:
-        return 2
-    if "7 хоног" in ql or "7хоног" in ql:
-        return 7
-    if "30 хоног" in ql or "30хоног" in ql:
-        return 30
-    m = re.search(r"(\d+)\s*(хоног|өдөр)", ql)
-    if m:
-        return max(1, min(int(m.group(1)), 90))
-    return 7
-
-
-def _extract_year(q: str) -> Optional[int]:
-    m = re.search(r"\b(20\d{2})\b", q or "")
-    if not m:
-        return None
-    y = int(m.group(1))
-    if 2000 <= y <= 2100:
-        return y
-    return None
-
-
-def _pick_metric_any(q: str) -> str:
-    ql = (q or "").lower()
-    if any(k in ql for k in ["qty", "quantity", "тоо", "ширхэг", "soldqty"]):
-        return "SoldQty"
-    if any(k in ql for k in ["gross", "grosssale", "нийт"]):
-        return "GrossSale"
-    if any(k in ql for k in ["татвар", "vat", "tax"]):
-        return "Tax_VAT"
-    if any(k in ql for k in ["хөнгөлөлт", "discount"]):
-        return "Discount"
-    if any(k in ql for k in ["өртөг", "cost", "actualcost"]):
-        return "ActualCost"
-    # default
-    return "NetSale"
-
-
-def _has_col(t, name: str) -> bool:
-    name_l = (name or "").lower()
-    return any(((c.name or "").lower() == name_l) for c in (t.columns or []))
-
-
-def _pick_first_existing(t, options: List[str]) -> Optional[str]:
-    for o in options:
-        if _has_col(t, o):
-            return o
-    return None
-
-
-def _format_table(cols: List[str], rows: List[List[Any]], max_rows: int = 50) -> str:
-    show = rows[:max_rows]
-    lines = [" | ".join(cols)]
-    for r in show:
-        lines.append(" | ".join([str(x) for x in r]))
-    return "\n".join(lines)
-
-
-def _safe_notes(txt: str) -> str:
-    return (txt or "").strip()
-
-
 async def text2sql_answer(query: str) -> str:
-    q = (query or "").strip()
-    if not q:
-        return "Text2SQL: хоосон асуулт байна."
 
-    ql = q.lower()
-    year = _extract_year(q)
-    store = _extract_store_any(q)
-
-    if ("хамгийн" in ql and ("их зарагдсан" in ql or "их борлуулсан" in ql)) and (year is not None):
-        tbl = "Cluster_Main_Sales"
-        sql_top = f"""
-        SELECT
-          GDS_CD AS item,
-          sum(SoldQty) AS total_qty
-        FROM {tbl}
-        WHERE SalesDate >= toDate('{year}-01-01')
-          AND SalesDate <  toDate('{year + 1}-01-01')
-        GROUP BY item
-        ORDER BY total_qty DESC
-        LIMIT 10
-        """.strip()
-
-        try:
-            client = _ch_client()
-            res = client.query(sql_top)
-            cols = list(res.column_names or [])
-            rows = [list(r) for r in (res.result_rows or [])]
-            return (
-                "Text2SQL (RULE top sold)\n"
-                f"Total sold qty top-10 for {year}\n\n"
-                f"SQL:\n{sql_top}\n\n"
-                f"DATA (top {min(50, len(rows))}):\n{_format_table(cols, rows, 50) if rows else '(хоосон үр дүн)'}"
-            )
-        except Exception as e:
-            pass
-
-    if ("нийт борлуулалт" in ql or "total sales" in ql) and (year is not None):
-        metric = "GrossSale" if ("gross" in ql or "нийт" in ql) else "NetSale"
-        tbl = "Cluster_Main_Sales"
-        sql_sum = f"""
-        SELECT
-          sum({metric}) AS total_sales
-        FROM {tbl}
-        WHERE SalesDate >= toDate('{year}-01-01')
-          AND SalesDate <  toDate('{year + 1}-01-01')
-        LIMIT 1
-        """.strip()
-
-        try:
-            client = _ch_client()
-            res = client.query(sql_sum)
-            cols = list(res.column_names or [])
-            rows = [list(r) for r in (res.result_rows or [])]
-            return (
-                "Text2SQL (RULE year total)\n"
-                f"Total sales for {year}\n\n"
-                f"SQL:\n{sql_sum}\n\n"
-                f"DATA (top {min(50, len(rows))}):\n{_format_table(cols, rows, 50) if rows else '(хоосон үр дүн)'}"
-            )
-        except Exception:
-            pass
-
-    candidates = _registry.search(q, top_k=8)
+    # ----------------------------
+    # 1) Find candidate tables from dictionary
+    # ----------------------------
+    candidates = _registry.search(query, top_k=8)
     if not candidates:
         return (
             "Text2SQL: Dictionary дээрээс тохирох хүснэгт олдсонгүй.\n"
-            "Table/Column нэр, эсвэл түлхүүр үг (StoreID, SalesDate, NetSale гэх мэт) нэмээд асуугаарай."
+            "Table/Column нэр, эсвэл бизнес түлхүүр үг (StoreID, SalesDate, NetSale гэх мэт) нэмээд асуугаарай."
         )
 
-    MAX_TABLES = 3
-    MAX_COLS = 25
+    # Build compact schema context for LLM
+    schema_ctx = []
+    for t in candidates[:5]:
+        cols = [{"name": c.name, "type": c.dtype, "desc": c.attr} for c in t.columns[:60]]
+        schema_ctx.append({
+            "db": t.db,
+            "table": t.table,
+            "entity": t.entity,
+            "description": (t.description or "")[:200],
+            "columns": cols
+        })
 
-    schema_ctx: List[Dict[str, Any]] = []
-    for t in candidates[:MAX_TABLES]:
-        cols = []
-        for c in t.columns[:MAX_COLS]:
-            cols.append(
-                {
-                    "name": c.name,
-                    "type": (c.dtype or "")[:24],
-                    "desc": (c.attr or "")[:60],
-                }
-            )
-
-        schema_ctx.append(
-            {
-                "db": t.db,
-                "table": t.table,
-                "entity": (t.entity or "")[:60],
-                "description": (t.description or "")[:120],
-                "columns": cols,
-            }
-        )
-
+    # Allowed tables list (strict allowlist)
     allowed_tables = set()
     for t in candidates[:8]:
         allowed_tables.add(t.table)
         allowed_tables.add(f"{t.db}.{t.table}")
 
+    # ----------------------------
+    # 2) Try LLM SQL (best effort)
+    # ----------------------------
     sql = ""
     notes = ""
     try:
-        user_payload = {
-            "q": q,
-            "db": CLICKHOUSE_DATABASE,
-            "tables": schema_ctx,
-        }
+        prompt = [
+            {"role": "system", "content":
+                "You generate SAFE ClickHouse SELECT queries. Reply ONLY JSON.\n"
+                "Rules:\n"
+                "- Only SELECT (no DDL/DML)\n"
+                "- Prefer the provided tables/columns\n"
+                "- Always include a LIMIT\n"
+                "- If unclear, return exploratory SELECT * LIMIT 20 on the best candidate table.\n"
+                "Output JSON: {\"sql\":\"...\",\"notes\":\"...\"}"
+            },
+            {"role": "user", "content": json.dumps({
+                "question": query,
+                "database_hint": CLICKHOUSE_DATABASE,
+                "candidates": schema_ctx
+            }, ensure_ascii=False)}
+        ]
 
-        system_msg = (
-            "You generate SAFE ClickHouse SELECT queries. Reply ONLY JSON.\n"
-            "Rules:\n"
-            "- Only SELECT (no DDL/DML)\n"
-            "- Use only provided tables/columns\n"
-            "- Keep SQL short\n"
-            "- Always include LIMIT (10~200)\n"
-            "- If unclear, return: SELECT * FROM <best_table> LIMIT 20\n"
-            "Output JSON: {\"sql\":\"...\",\"notes\":\"...\"}"
-        )
-
-        out = await chat_completion(
-            user_message=json.dumps(user_payload, ensure_ascii=False),
-            system=system_msg,
-            temperature=0.0,
-            max_tokens=256,
-        )
-
-        m = re.search(r"\{.*\}", out or "", re.DOTALL)
+        out = await llm.chat(prompt, temperature=0.0, max_tokens=550)
+        m = re.search(r"\{.*\}", out, re.DOTALL)
         data = json.loads(m.group(0) if m else out)
 
         sql = (data.get("sql") or "").strip()
-        notes = _safe_notes(data.get("notes") or "")
+        notes = (data.get("notes") or "").strip()
 
+        # Safety checks
         if not _is_safe_sql(sql):
             raise ValueError("unsafe_sql")
 
-        sql = _enforce_limit(sql, max(10, min(int(CH_MAX_ROWS), 200)))
+        sql = _enforce_limit(sql, max(10, min(CH_MAX_ROWS, 1000)))
 
         used = _tables_in_sql(sql)
         if used and not all(u in allowed_tables for u in used):
             raise ValueError(f"table_not_allowed: {sorted(list(used))}")
 
+        # Execute LLM SQL
         client = _ch_client()
         res = client.query(sql)
-        cols = list(res.column_names or [])
-        rows = [list(r) for r in (res.result_rows or [])]
+        rows = res.result_rows
+        cols = res.column_names
 
-        return (
-            "Text2SQL (ClickHouse)\n"
-            f"{notes}\n\n"
-            f"SQL:\n{sql}\n\n"
-            f"DATA (top {min(50, len(rows))}):\n"
-            f"{_format_table(cols, rows, 50) if rows else '(хоосон үр дүн)'}"
-        )
+        if not rows:
+            return f"Text2SQL (ClickHouse) \n{notes}\n\nSQL:\n{sql}\n\nDATA: (хоосон үр дүн)"
+
+        show_n = min(len(rows), 50)
+        lines = [" | ".join(cols)]
+        for r in rows[:show_n]:
+            lines.append(" | ".join([str(x) for x in r]))
+
+        return f"Text2SQL (ClickHouse) \n{notes}\n\nSQL:\n{sql}\n\nDATA (top {show_n}):\n" + "\n".join(lines)
 
     except Exception as llm_err:
+        # ----------------------------
+        # 3) LLM failed -> RULE fallback aggregation
+        # ----------------------------
         try:
             client = _ch_client()
 
-            days = _extract_days_any(q)
-            metric_pref = _pick_metric_any(q)
+            store = _extract_store_any(query)
+            days = _extract_days_any(query)
+            metric = _pick_metric_any(query)
+
             end_d = date.today()
             start_d = end_d - timedelta(days=days - 1)
 
-            candidate_tables: List[str] = []
+            candidate_tables = []
             for t in candidates[:5]:
+                candidate_tables.append(t.table)
                 candidate_tables.append(f"{t.db}.{t.table}")
-            candidate_tables += (CH_FALLBACK_TABLES or [])
+            candidate_tables += CH_FALLBACK_TABLES  # from env
 
             if store:
-                for t in candidates[:5]:
-                    tbl = f"{t.db}.{t.table}"
-
-                    date_col = _pick_first_existing(t, ["SalesDate", "sale_date", "tr_date", "stock_date", "CRT_YMD"])
-                    store_col = _pick_first_existing(t, ["StoreID", "Store", "BIZLOC_CD", "STORE_ID"])
-                    metric_col = _pick_first_existing(
-                        t, [metric_pref, "NetSale", "NetSales", "GrossSale", "GrossSales", "Qty", "SoldQty"]
-                    )
-
-                    if not (date_col and store_col and metric_col):
-                        continue
-
+                for tbl in candidate_tables:
                     sql_a = f"""
                     SELECT
-                      {date_col} AS day,
-                      sum({metric_col}) AS value
+                      SalesDate AS day,
+                      sum({metric}) AS value
                     FROM {tbl}
-                    WHERE {store_col} = %(store)s
-                      AND {date_col} >= %(start)s
-                      AND {date_col} <= %(end)s
+                    WHERE StoreID = %(store)s
+                      AND SalesDate >= %(start)s
+                      AND SalesDate <= %(end)s
                     GROUP BY day
                     ORDER BY day DESC
-                    LIMIT {min(200, int(CH_MAX_ROWS))}
-                    """.strip()
-
+                    LIMIT {min(200, CH_MAX_ROWS)}
+                    """
                     try:
-                        res = client.query(
-                            sql_a,
-                            parameters={"store": store, "start": str(start_d), "end": str(end_d)},
-                        )
+                        res = client.query(sql_a, parameters={
+                            "store": store,
+                            "start": str(start_d),
+                            "end": str(end_d),
+                        })
                         if res.result_rows:
-                            cols = list(res.column_names or [])
-                            rows = [list(r) for r in (res.result_rows or [])]
+                            cols = res.column_names
+                            rows = res.result_rows[:50]
+                            lines = [" | ".join(cols)] + [" | ".join(map(str, r)) for r in rows]
                             return (
-                                "Text2SQL fallback (RULE aggregation)\n"
-                                f"Reason: LLM failed ({type(llm_err).__name__})\n\n"
-                                f"SQL:\n{sql_a}\n\n"
-                                f"DATA (top {min(50, len(rows))}):\n{_format_table(cols, rows, 50)}"
+                                "Text2SQL fallback (RULE aggregation) \n"
+                                f"Reason: LLM/SQL failed ({type(llm_err).__name__})\n"
+                                f"SQL:\n{sql_a}\n\nDATA:\n" + "\n".join(lines)
                             )
                     except Exception:
                         continue
 
-            for t in candidates[:5]:
-                tbl = f"{t.db}.{t.table}"
-                date_col = _pick_first_existing(t, ["SalesDate", "sale_date", "tr_date", "stock_date", "CRT_YMD"])
-                metric_col = _pick_first_existing(
-                    t, [metric_pref, "NetSale", "NetSales", "GrossSale", "GrossSales", "Qty", "SoldQty"]
-                )
-                if not (date_col and metric_col):
-                    continue
-
-                sql_a2 = f"""
-                SELECT
-                  sum({metric_col}) AS value
-                FROM {tbl}
-                WHERE {date_col} >= %(start)s
-                  AND {date_col} <= %(end)s
-                LIMIT 1
-                """.strip()
-
-                try:
-                    res = client.query(sql_a2, parameters={"start": str(start_d), "end": str(end_d)})
-                    if res.result_rows:
-                        cols = list(res.column_names or [])
-                        rows = [list(r) for r in (res.result_rows or [])]
-                        return (
-                            "Text2SQL fallback (RULE sum window)\n"
-                            f"Reason: LLM failed ({type(llm_err).__name__})\n\n"
-                            f"SQL:\n{sql_a2}\n\n"
-                            f"DATA:\n{_format_table(cols, rows, 50)}"
-                        )
-                except Exception:
-                    continue
-
+            # ----------------------------
+            # 4) If aggregation fails -> SAMPLE ROWS fallback
+            # ----------------------------
             for tbl in candidate_tables:
                 sql_b = f"SELECT * FROM {tbl} LIMIT 20"
                 try:
                     res = client.query(sql_b)
                     if res.result_rows:
-                        cols = list(res.column_names or [])
-                        rows = [list(r) for r in (res.result_rows or [])]
+                        cols = res.column_names
+                        rows = res.result_rows[:20]
+                        lines = [" | ".join(cols)] + [" | ".join(map(str, r)) for r in rows]
                         return (
-                            "Text2SQL fallback (SAMPLE rows)\n"
-                            f"Reason: LLM/aggregation failed ({type(llm_err).__name__})\n\n"
-                            f"SQL:\n{sql_b}\n\n"
-                            f"DATA (top {min(20, len(rows))}):\n{_format_table(cols, rows, 20)}"
+                            "Text2SQL fallback (SAMPLE rows) \n"
+                            f"Reason: LLM/aggregation failed ({type(llm_err).__name__})\n"
+                            f"SQL:\n{sql_b}\n\nDATA:\n" + "\n".join(lines)
                         )
                 except Exception:
                     continue
 
-            out_msg = (
+            # ----------------------------
+            # 5) Last resort -> dictionary schema result
+            # ----------------------------
+            out = (
                 "ClickHouse дээр query ажиллуулах боломжгүй/үр дүн олдсонгүй.\n"
                 "Гэхдээ dictionary дээрээс хамгийн тохирох schema-ууд:\n"
             )
             for t in candidates[:3]:
-                out_msg += f"\n- {t.db}.{t.table}: {(t.description or '')}\n"
-                out_msg += "  cols: " + ", ".join([c.name for c in t.columns[:20]]) + "\n"
-            return out_msg
+                out += f"\n- {t.db}.{t.table}: {(t.description or '')}\n"
+                out += "  cols: " + ", ".join([c.name for c in t.columns[:20]]) + "\n"
+            return out
 
         except Exception as ch_err:
-            out_msg = (
+            out = (
                 "Text2SQL: ClickHouse connection/query асуудалтай байна.\n"
                 f"LLM error: {str(llm_err)}\n"
                 f"CH error: {str(ch_err)}\n\n"
                 "Dictionary top matches:\n"
             )
             for t in candidates[:3]:
-                out_msg += f"- {t.db}.{t.table}\n"
-            return out_msg
+                out += f"- {t.db}.{t.table}\n"
+            return out
+

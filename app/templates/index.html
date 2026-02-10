@@ -2,14 +2,13 @@
 <html lang="mn">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>CU Orchestrator</title>
+  <title>CU Orchestrator UI</title>
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
 
 <div class="container">
-  <h1>CU Orchestrator</h1>
+  <h2>🤖 CU Orchestrator</h2>
 
   <label>Agent сонгох</label>
   <select id="agent">
@@ -21,44 +20,12 @@
   </select>
 
   <label>Асуулт</label>
-  <textarea id="question" placeholder="Ж: 2025 оны нийт борлуулалт"></textarea>
+  <textarea id="question" placeholder="Text"></textarea>
 
   <button onclick="ask()">Асуух</button>
 
-  <div class="hr"></div>
-
-  <div class="sectionTitle">
-    <h2>Хариу</h2>
-    <button class="copyBtn" onclick="copyCurrent()">Copy</button>
-  </div>
-
-  <div class="tabs">
-    <div class="tab active" data-tab="pretty">Pretty</div>
-    <div class="tab" data-tab="raw">Raw Answer</div>
-    <div class="tab" data-tab="json">Raw JSON</div>
-  </div>
-
-  <div id="panel-pretty" class="panel">
-    <pre id="pretty">...</pre>
-
-    <div class="sqlBox">
-      <div class="muted">SQL</div>
-      <pre id="sqlBox"></pre>
-    </div>
-
-    <div class="sqlBox">
-      <div class="muted">Result</div>
-      <div id="resultTable"></div>
-    </div>
-  </div>
-
-  <div id="panel-raw" class="panel hidden">
-    <pre id="raw"></pre>
-  </div>
-
-  <div id="panel-json" class="panel hidden">
-    <pre id="api"></pre>
-  </div>
+  <h3>Хариу</h3>
+  <pre id="answer">...</pre>
 </div>
 
 <script src="/static/app.js"></script>
