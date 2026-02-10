@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pydantic import BaseModel, Field
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 
 
 class ChatRequest(BaseModel):
@@ -14,8 +14,8 @@ class ChatResponse(BaseModel):
     meta: Dict[str, Any] = Field(default_factory=dict)
 
     sql: Optional[str] = None
-    columns: list[str] = Field(default_factory=list)
-    rows: list[list[Any]] = Field(default_factory=list)
+    columns: List[str] = Field(default_factory=list)
+    rows: List[List[Any]] = Field(default_factory=list)
 
 
 class ClassificationResult(BaseModel):

@@ -35,7 +35,6 @@ class SchemaRegistry:
         sh_table = wb["Table"]
         sh_col = wb["Column"]
 
-        # --- Parse Table sheet ---
         header = [c.value for c in next(sh_table.iter_rows(min_row=1, max_row=1))]
         col_map = {name: i for i, name in enumerate(header) if name}
 
@@ -62,7 +61,6 @@ class SchemaRegistry:
                 "columns": []
             }
 
-        # --- Parse Column sheet ---
         header2 = [c.value for c in next(sh_col.iter_rows(min_row=1, max_row=1))]
         col_map2 = {name: i for i, name in enumerate(header2) if name}
 

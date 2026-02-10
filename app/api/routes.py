@@ -1,80 +1,71 @@
 import logging
 import re
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional
 
+import clickhouse_connect
 from fastapi import APIRouter
 
 from app.core.schemas import ChatRequest, ChatResponse, OrchestratorState
 from app.graph.orchestrator import build_graph
+from app.config import (
+    CLICKHOUSE_HOST, CLICKHOUSE_PORT, CLICKHOUSE_USER, CLICKHOUSE_PASSWORD, CLICKHOUSE_DATABASE,
+    CH_MAX_ROWS
+)
 
 router = APIRouter()
 log = logging.getLogger("cu-orchestrator")
 
 
-# ---------------------------------------------------------
-# Helper: Text2SQL string → structured (sql / columns / rows)
-# ---------------------------------------------------------
-def parse_text2sql_answer(answer: str) -> Dict[str, Any]:
-    """
-    Expected formats handled:
-      - "... SQL:\\n<sql>\\n\\nDATA (top N):\\ncol | col\\nval | val"
-      - "... SQL:\\n<sql>"
-      - plain text (non-text2sql)
-    """
-    out = {
-        "notes": "",
-        "sql": None,
-        "columns": [],
-        "rows": [],
-    }
+def _ch_client():
+    return clickhouse_connect.get_client(
+        host=CLICKHOUSE_HOST,
+        port=CLICKHOUSE_PORT,
+        username=CLICKHOUSE_USER,
+        password=CLICKHOUSE_PASSWORD,
+        database=CLICKHOUSE_DATABASE,
+    )
 
+
+def _is_safe_sql(sql: str) -> bool:
+    if not sql:
+        return False
+    s = sql.strip().lower()
+    if not s.startswith("select"):
+        return False
+    banned = ["insert", "update", "delete", "drop", "truncate", "alter", "create", "attach", "detach"]
+    return not any(b in s for b in banned)
+
+
+def _ensure_limit(sql: str, max_rows: int) -> str:
+    s = sql.strip().rstrip(";")
+    if re.search(r"\blimit\b", s, flags=re.IGNORECASE):
+        return s
+    return f"{s}\nLIMIT {max_rows}"
+
+
+def parse_sql_from_answer(answer: str) -> Optional[str]:
     if not answer:
-        return out
+        return None
 
-    # No SQL section → just notes
-    if "SQL:" not in answer:
-        out["notes"] = answer.strip()
-        return out
+    if "SQL:" in answer:
+        rest = answer.split("SQL:", 1)[1].strip()
+        if "DATA" in rest:
+            sql_part = rest.split("DATA", 1)[0].strip()
+            return sql_part or None
+        return rest or None
 
-    # Split notes / SQL+DATA
-    notes, rest = answer.split("SQL:", 1)
-    out["notes"] = notes.strip()
+    # If answer itself starts with SELECT
+    if answer.strip().lower().startswith("select"):
+        return answer.strip()
 
-    # No DATA section → only SQL
-    if "DATA" not in rest:
-        out["sql"] = rest.strip()
-        return out
-
-    # Split SQL / DATA
-    sql_part, data_part = rest.split("DATA", 1)
-    out["sql"] = sql_part.strip()
-
-    # Parse table-like data
-    lines = [
-        l.strip()
-        for l in data_part.splitlines()
-        if "|" in l
-    ]
-
-    if not lines:
-        return out
-
-    # Header
-    out["columns"] = [c.strip() for c in lines[0].split("|")]
-
-    # Rows
-    for line in lines[1:]:
-        out["rows"].append([c.strip() for c in line.split("|")])
-
-    return out
+    return None
 
 
-# ---------------------------------------------------------
+# ---------------------------
 # API: /chat
-# ---------------------------------------------------------
+# ---------------------------
 @router.post("/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest):
-    # Build initial orchestrator state
     state = OrchestratorState(
         raw_message=req.message,
         forced_agent=req.force_agent
@@ -83,9 +74,7 @@ async def chat(req: ChatRequest):
     graph = build_graph()
     result = await graph.ainvoke(state)
 
-    # -------------------------
     # DEBUG logs
-    # -------------------------
     try:
         if isinstance(result, dict):
             log.info("GRAPH_RESULT_KEYS=%s", list(result.keys()))
@@ -96,14 +85,11 @@ async def chat(req: ChatRequest):
     except Exception:
         log.exception("Failed to log graph result")
 
-    # -------------------------
-    # Normalize output
-    # -------------------------
-    answer: str | None = None
+    answer: Optional[str] = None
     meta: Dict[str, Any] = {}
-    sql = None
-    columns = []
-    rows = []
+    sql: Optional[str] = None
+    columns: List[str] = []
+    rows: List[List[Any]] = []
 
     if isinstance(result, dict):
         meta = result.get("meta") or {}
@@ -114,27 +100,35 @@ async def chat(req: ChatRequest):
                 or result.get("response")
         )
 
+        sql = result.get("sql") or sql
+        columns = result.get("columns") or columns
+        rows = result.get("rows") or rows
+
     if not answer:
         answer = f"Хариу үүсээгүй байна. meta={meta}"
 
-    # -------------------------
-    # Text2SQL → structured response
-    # -------------------------
     agent = (meta.get("agent") or meta.get("mode") or "").lower()
     forced = (req.force_agent or "").lower()
 
     if agent == "text2sql" or forced == "text2sql":
-        parsed = parse_text2sql_answer(answer)
+        if not sql:
+            sql = parse_sql_from_answer(answer)
 
-        # UI дээр notes-ийг human text болгож харуулна
-        answer = parsed.get("notes") or answer
-        sql = parsed.get("sql")
-        columns = parsed.get("columns", [])
-        rows = parsed.get("rows", [])
+        if sql and (not rows or not columns):
+            try:
+                if _is_safe_sql(sql):
+                    sql_run = _ensure_limit(sql, min(int(CH_MAX_ROWS), 200))
+                    client = _ch_client()
+                    res = client.query(sql_run)
 
-    # -------------------------
-    # Final response
-    # -------------------------
+                    columns = list(res.column_names or [])
+                    rows = [list(r) for r in (res.result_rows or [])][:50]
+                    sql = sql_run
+                else:
+                    meta["sql_blocked"] = True
+            except Exception as e:
+                meta["ch_error"] = str(e)
+
     return ChatResponse(
         answer=answer,
         meta=meta,

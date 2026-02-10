@@ -2,100 +2,64 @@
 <html lang="mn">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>CU Orchestrator UI</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>CU Orchestrator</title>
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
 
 <div class="container">
-  <div class="header">
-    <div class="brand">
-      <div class="logo">🤖</div>
-      <div>
-        <h1>CU Orchestrator</h1>
-      </div>
+  <h1>CU Orchestrator</h1>
+
+  <label>Agent сонгох</label>
+  <select id="agent">
+    <option value="auto">AUTO (Orchestrator)</option>
+    <option value="text2sql">Text2SQL</option>
+    <option value="policy">Policy</option>
+    <option value="research">Research</option>
+    <option value="general">General</option>
+  </select>
+
+  <label>Асуулт</label>
+  <textarea id="question" placeholder="Ж: 2025 оны нийт борлуулалт"></textarea>
+
+  <button onclick="ask()">Асуух</button>
+
+  <div class="hr"></div>
+
+  <div class="sectionTitle">
+    <h2>Хариу</h2>
+    <button class="copyBtn" onclick="copyCurrent()">Copy</button>
+  </div>
+
+  <div class="tabs">
+    <div class="tab active" data-tab="pretty">Pretty</div>
+    <div class="tab" data-tab="raw">Raw Answer</div>
+    <div class="tab" data-tab="json">Raw JSON</div>
+  </div>
+
+  <div id="panel-pretty" class="panel">
+    <pre id="pretty">...</pre>
+
+    <div class="sqlBox">
+      <div class="muted">SQL</div>
+      <pre id="sqlBox"></pre>
+    </div>
+
+    <div class="sqlBox">
+      <div class="muted">Result</div>
+      <div id="resultTable"></div>
     </div>
   </div>
 
-  <div class="grid">
-    <!-- Left: Inputs -->
-    <div class="card">
-      <div style="margin-bottom: 12px;">
-        <label>Agent сонгох</label>
-        <select id="agent">
-          <option value="auto">AUTO (Orchestrator)</option>
-          <option value="text2sql">Text2SQL</option>
-          <option value="policy">Policy</option>
-          <option value="research">Research</option>
-          <option value="general">General</option>
-        </select>
-      </div>
+  <div id="panel-raw" class="panel hidden">
+    <pre id="raw"></pre>
+  </div>
 
-      <div style="margin-bottom: 12px;">
-        <label>Асуулт</label>
-        <textarea id="question" placeholder="Жишээ: 2025 онд хамгийн их зарагдсан бүтээгдэхүүн (нэр/тоо)"></textarea>
-      </div>
-
-      <div class="actions">
-        <button id="askBtn">
-          <div id="spinner" class="spinner"></div>
-          <span>Асуух</span>
-        </button>
-      </div>
-    </div>
-
-    <!-- Right: Output -->
-    <div class="card">
-      <div class="sectionTitle">
-        <h2>Хариу</h2>
-        <div class="muted">Pretty / Raw</div>
-      </div>
-
-      <div class="tabs">
-        <div id="tabPretty" class="tab active">Pretty</div>
-        <div id="tabRaw" class="tab">Raw JSON</div>
-      </div>
-
-      <!-- Pretty panel -->
-      <div id="panelPretty">
-        <div id="answerText"></div>
-
-        <div id="sqlWrap" class="codeWrap" style="display:none;">
-          <div class="codeBar">
-            <div>SQL</div>
-            <button id="sqlCopy" type="button">Copy</button>
-          </div>
-          <pre id="sqlPre"></pre>
-        </div>
-
-        <div id="tableWrap" class="tableWrap" style="display:none;">
-          <div class="tableMeta">
-            <div id="resultMeta">Rows: 0</div>
-            <div class="muted">Scroll to view</div>
-          </div>
-          <div style="max-height: 360px; overflow:auto;">
-            <table id="resultTable"></table>
-          </div>
-          <div id="moreHint" class="moreHint"></div>
-        </div>
-      </div>
-
-      <!-- Raw panel -->
-      <div id="panelRaw" style="display:none;">
-        <div class="codeWrap">
-          <div class="codeBar">
-            <div>API Response</div>
-            <button type="button" onclick="copyToClipboard(document.getElementById('rawPre').textContent)">Copy</button>
-          </div>
-          <pre id="rawPre">{}</pre>
-        </div>
-      </div>
-    </div>
+  <div id="panel-json" class="panel hidden">
+    <pre id="api"></pre>
   </div>
 </div>
-
-<div id="toast" class="toast"></div>
 
 <script src="/static/app.js"></script>
 </body>

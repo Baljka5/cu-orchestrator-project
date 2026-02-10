@@ -1,5 +1,5 @@
-function escapeHtml(s) {
-  return String(s)
+function esc(s) {
+  return String(s ?? "")
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
@@ -7,160 +7,50 @@ function escapeHtml(s) {
     .replaceAll("'", "&#039;");
 }
 
-function copyToClipboard(text) {
-  navigator.clipboard.writeText(text).then(() => {
-    toast("✅ Copied");
-  }).catch(() => toast("❌ Copy failed"));
-}
-
-let toastTimer = null;
-function toast(msg) {
-  const t = document.getElementById("toast");
-  t.textContent = msg;
-  t.classList.add("show");
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => t.classList.remove("show"), 1300);
-}
-
-function setLoading(isLoading) {
-  const btn = document.getElementById("askBtn");
-  const spinner = document.getElementById("spinner");
-  btn.disabled = isLoading;
-  spinner.style.display = isLoading ? "inline-block" : "none";
-  btn.querySelector("span").textContent = isLoading ? "Асууж байна..." : "Асуух";
-}
-
-function parseLegacyAnswer(text) {
-  // Supports:
-  // Text2SQL ... \nSQL:\n<sql>\n\nDATA (top N):\ncol1 | col2\nv1 | v2
-  const out = { answerText: text, sql: "", columns: [], rows: [] };
-  if (!text) return out;
-
-  const sqlIdx = text.indexOf("SQL:");
-  if (sqlIdx === -1) return out;
-
-  // find data section
-  const dataIdx = text.indexOf("\n\nDATA");
-  if (dataIdx === -1) {
-    // only SQL present
-    out.sql = text.slice(sqlIdx + 4).trim();
-    out.answerText = text.slice(0, sqlIdx).trim();
-    return out;
-  }
-
-  out.answerText = text.slice(0, sqlIdx).trim();
-  out.sql = text.slice(sqlIdx + 4, dataIdx).trim();
-
-  const dataBlock = text.slice(dataIdx).trim();
-  // locate header line after first newline
-  const lines = dataBlock.split("\n").map(l => l.trim()).filter(Boolean);
-
-  // find the first line that contains " | " -> header
-  const headerLine = lines.find(l => l.includes(" | "));
-  if (!headerLine) return out;
-
-  const headerPos = lines.indexOf(headerLine);
-  const cols = headerLine.split(" | ").map(x => x.trim());
-  out.columns = cols;
-
-  const rowLines = lines.slice(headerPos + 1).filter(l => l.includes(" | "));
-  out.rows = rowLines.map(l => l.split(" | ").map(x => x.trim()));
-  return out;
-}
-
-function renderSql(sql) {
-  const sqlWrap = document.getElementById("sqlWrap");
-  const sqlPre = document.getElementById("sqlPre");
-  const sqlCopy = document.getElementById("sqlCopy");
-
-  if (!sql) {
-    sqlWrap.style.display = "none";
-    sqlPre.textContent = "";
-    return;
-  }
-  sqlWrap.style.display = "block";
-  sqlPre.textContent = sql;
-
-  sqlCopy.onclick = () => copyToClipboard(sql);
+function setActiveTab(name) {
+  document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
+  document.querySelectorAll(".panel").forEach(p => p.classList.add("hidden"));
+  document.querySelector(`.tab[data-tab="${name}"]`)?.classList.add("active");
+  document.getElementById(`panel-${name}`)?.classList.remove("hidden");
 }
 
 function renderTable(columns, rows) {
-  const tableWrap = document.getElementById("tableWrap");
-  const table = document.getElementById("resultTable");
-  const meta = document.getElementById("resultMeta");
-
-  if (!columns || columns.length === 0) {
-    tableWrap.style.display = "none";
-    table.innerHTML = "";
-    meta.textContent = "";
+  const wrap = document.getElementById("resultTable");
+  if (!columns || !columns.length) {
+    wrap.innerHTML = `<div class="muted">Result хоосон байна.</div>`;
     return;
   }
 
-  tableWrap.style.display = "block";
-  meta.textContent = `Rows: ${rows ? rows.length : 0}  •  Columns: ${columns.length}`;
+  const head = columns.map(c => `<th>${esc(c)}</th>`).join("");
+  const body = (rows || []).map(r => {
+    const tds = columns.map((_, i) => `<td>${esc(r?.[i])}</td>`).join("");
+    return `<tr>${tds}</tr>`;
+  }).join("");
 
-  // build table
-  let thead = "<thead><tr>";
-  for (const c of columns) thead += `<th>${escapeHtml(c)}</th>`;
-  thead += "</tr></thead>";
-
-  let tbody = "<tbody>";
-  const safeRows = rows || [];
-  const maxShow = Math.min(safeRows.length, 200); // UI cap
-  for (let i = 0; i < maxShow; i++) {
-    tbody += "<tr>";
-    const r = safeRows[i];
-    for (let j = 0; j < columns.length; j++) {
-      const v = (r && r[j] !== undefined) ? r[j] : "";
-      tbody += `<td>${escapeHtml(v)}</td>`;
-    }
-    tbody += "</tr>";
-  }
-  tbody += "</tbody>";
-
-  table.innerHTML = thead + tbody;
-
-  // show "more rows" hint if truncated
-  const hint = document.getElementById("moreHint");
-  hint.style.display = safeRows.length > maxShow ? "block" : "none";
-  if (safeRows.length > maxShow) {
-    hint.textContent = `UI дээр ${maxShow} мөр хүртэл харууллаа (нийт ${safeRows.length}).`;
-  }
-}
-
-function renderAnswerText(text) {
-  const ans = document.getElementById("answerText");
-  ans.textContent = text || "";
-}
-
-function setActiveTab(name) {
-  const tabs = ["tabPretty", "tabRaw"];
-  for (const t of tabs) document.getElementById(t).classList.remove("active");
-
-  const panels = ["panelPretty", "panelRaw"];
-  for (const p of panels) document.getElementById(p).style.display = "none";
-
-  if (name === "pretty") {
-    document.getElementById("tabPretty").classList.add("active");
-    document.getElementById("panelPretty").style.display = "block";
-  } else {
-    document.getElementById("tabRaw").classList.add("active");
-    document.getElementById("panelRaw").style.display = "block";
-  }
+  wrap.innerHTML = `
+    <div class="tableWrap">
+      <table>
+        <thead><tr>${head}</tr></thead>
+        <tbody>${body || `<tr><td colspan="${columns.length}" class="muted">No rows</td></tr>`}</tbody>
+      </table>
+    </div>
+  `;
 }
 
 async function ask() {
-  const q = document.getElementById("question").value.trim();
+  const q = document.getElementById("question").value;
   const agent = document.getElementById("agent").value;
-  const rawPre = document.getElementById("rawPre");
 
-  if (!q) return toast("Асуултаа бичнэ үү");
+  const pretty = document.getElementById("pretty");
+  const raw = document.getElementById("raw");
+  const api = document.getElementById("api");
+  const sqlBox = document.getElementById("sqlBox");
 
-  setLoading(true);
-  renderSql("");
-  renderTable([], []);
-  renderAnswerText("");
-  rawPre.textContent = "";
+  pretty.textContent = "⏳ асууж байна...";
+  raw.textContent = "";
+  api.textContent = "";
+  sqlBox.textContent = "";
+  document.getElementById("resultTable").innerHTML = "";
 
   try {
     const res = await fetch("/api/chat", {
@@ -174,61 +64,51 @@ async function ask() {
 
     const data = await res.json();
 
-    // 1) Raw panel always shows JSON
-    rawPre.textContent = JSON.stringify(data, null, 2);
+    api.textContent = JSON.stringify(data, null, 2);
+    raw.textContent = data.answer || "";
 
-    // 2) Preferred structured format:
-    // {
-    //   answer: "...",
-    //   sql: "SELECT ...",
-    //   columns: ["a","b"],
-    //   rows: [[...],[...]]
-    // }
-    let sql = data.sql || "";
-    let columns = data.columns || (data.data && data.data.columns) || [];
-    let rows = data.rows || (data.data && data.data.rows) || [];
+    if (data.sql) sqlBox.textContent = data.sql;
 
-    // 3) Legacy: answer string containing SQL/DATA
-    const answerStr = data.answer || "";
-    if (!sql && answerStr) {
-      const parsed = parseLegacyAnswer(answerStr);
-      sql = parsed.sql || "";
-      columns = parsed.columns || [];
-      rows = parsed.rows || [];
-      renderAnswerText(parsed.answerText || "");
-    } else {
-      renderAnswerText(answerStr || "");
+    const agentName = data?.meta?.agent || "unknown";
+    const mode = data?.meta?.mode || "";
+    const rowCount = (data.rows || []).length;
+
+    pretty.textContent =
+      `Agent: ${agentName}\n` +
+      (mode ? `Mode: ${mode}\n` : "") +
+      (data.sql ? `SQL: OK\n` : `SQL: (none)\n`) +
+      `Rows: ${rowCount}`;
+
+    if (data.columns && data.columns.length) {
+      renderTable(data.columns, data.rows || []);
     }
 
-    renderSql(sql);
-    renderTable(columns, rows);
-
-    // choose tab: if table exists -> pretty, else raw
-    setActiveTab(columns && columns.length ? "pretty" : "raw");
-
+    setActiveTab("pretty");
   } catch (e) {
-    toast("❌ Алдаа");
-    document.getElementById("rawPre").textContent = String(e);
-    setActiveTab("raw");
-  } finally {
-    setLoading(false);
+    pretty.textContent = " Алдаа: " + e;
+    setActiveTab("pretty");
   }
 }
 
-// hotkeys
-document.addEventListener("DOMContentLoaded", () => {
-  document.getElementById("askBtn").addEventListener("click", ask);
-
-  document.getElementById("question").addEventListener("keydown", (ev) => {
-    // Ctrl+Enter -> ask
-    if ((ev.ctrlKey || ev.metaKey) && ev.key === "Enter") {
-      ev.preventDefault();
-      ask();
-    }
-  });
-
-  document.getElementById("tabPretty").addEventListener("click", () => setActiveTab("pretty"));
-  document.getElementById("tabRaw").addEventListener("click", () => setActiveTab("raw"));
-
-  setActiveTab("pretty");
+document.addEventListener("keydown", (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+    ask();
+  }
 });
+
+document.addEventListener("click", (e) => {
+  const t = e.target.closest(".tab");
+  if (t) setActiveTab(t.dataset.tab);
+});
+
+function copyCurrent() {
+  const active = document.querySelector(".tab.active")?.dataset?.tab || "pretty";
+  const panel = document.getElementById(`panel-${active}`);
+  if (!panel) return;
+  const text = panel.innerText || panel.textContent || "";
+  navigator.clipboard.writeText(text);
+}
+
+window.ask = ask;
+window.copyCurrent = copyCurrent;
+window.setActiveTab = setActiveTab;

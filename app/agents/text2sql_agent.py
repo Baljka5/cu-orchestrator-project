@@ -223,7 +223,6 @@ async def text2sql_answer(query: str) -> str:
         sql = (data.get("sql") or "").strip()
         notes = (data.get("notes") or "").strip()
 
-        # Safety checks
         if not _is_safe_sql(sql):
             raise ValueError("unsafe_sql")
 
@@ -233,7 +232,6 @@ async def text2sql_answer(query: str) -> str:
         if used and not all(u in allowed_tables for u in used):
             raise ValueError(f"table_not_allowed: {sorted(list(used))}")
 
-        # Execute LLM SQL
         client = _ch_client()
         res = client.query(sql)
         rows = res.result_rows
@@ -250,9 +248,6 @@ async def text2sql_answer(query: str) -> str:
         return f"Text2SQL (ClickHouse) \n{notes}\n\nSQL:\n{sql}\n\nDATA (top {show_n}):\n" + "\n".join(lines)
 
     except Exception as llm_err:
-        # ----------------------------
-        # 3) LLM failed -> RULE fallback aggregation
-        # ----------------------------
         try:
             client = _ch_client()
 
@@ -301,9 +296,6 @@ async def text2sql_answer(query: str) -> str:
                     except Exception:
                         continue
 
-            # ----------------------------
-            # 4) If aggregation fails -> SAMPLE ROWS fallback
-            # ----------------------------
             for tbl in candidate_tables:
                 sql_b = f"SELECT * FROM {tbl} LIMIT 20"
                 try:
@@ -320,9 +312,6 @@ async def text2sql_answer(query: str) -> str:
                 except Exception:
                     continue
 
-            # ----------------------------
-            # 5) Last resort -> dictionary schema result
-            # ----------------------------
             out = (
                 "ClickHouse дээр query ажиллуулах боломжгүй/үр дүн олдсонгүй.\n"
                 "Гэхдээ dictionary дээрээс хамгийн тохирох schema-ууд:\n"
