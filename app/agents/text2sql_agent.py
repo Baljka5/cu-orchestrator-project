@@ -12,7 +12,7 @@ from app.config import (
 )
 
 from app.core.llm import LLMClient
-from app.core.schema_registry import SchemaRegistry, TableInfo
+from app.core.schema_registry import SchemaRegistry, TableInfo, build_relationships
 
 
 llm = LLMClient()
@@ -314,9 +314,6 @@ def _build_sql_from_plan(
 
 
 async def _llm_generate_plan(query: str, schema_ctx: List[Dict[str, Any]], join_hints: List[Dict[str, str]]) -> Dict[str, Any]:
-    """
-    Ask LLM for PLAN JSON, not raw SQL.
-    """
     system = (
         "You are a ClickHouse analyst.\n"
         "Return ONLY JSON.\n"
@@ -345,6 +342,7 @@ async def _llm_generate_plan(query: str, schema_ctx: List[Dict[str, Any]], join_
         "database_hint": CLICKHOUSE_DATABASE,
         "candidates": schema_ctx,
         "join_hints": join_hints,
+        "relationships": relationships
     }
 
     prompt = [

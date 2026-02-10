@@ -145,3 +145,47 @@ class SchemaRegistry:
 
         scored.sort(key=lambda x: x[0], reverse=True)
         return [t for s, t in scored if s > 0][:top_k]
+
+
+def build_relationships(self) -> list[dict]:
+    rel = []
+
+    tbl_cols = {}
+    for t in self.tables:
+        tbl_cols[t.table] = [(c.name, (c.attr or "").lower()) for c in t.columns]
+
+    semantic_keys = [
+        "product code", "item code", "store number", "promotion id", "campaign", "event code"
+    ]
+
+    for key in semantic_keys:
+        occ = []
+        for tbl, cols in tbl_cols.items():
+            for cname, attr in cols:
+                if key in attr:
+                    occ.append((tbl, cname, key))
+        # create pairwise relationships
+        for i in range(len(occ)):
+            for j in range(i+1, len(occ)):
+                a = occ[i]; b = occ[j]
+                if a[0] != b[0]:
+                    rel.append({
+                        "left": f"{a[0]}.{a[1]}",
+                        "right": f"{b[0]}.{b[1]}",
+                        "type": "join_key",
+                        "label": key
+                    })
+
+    name_semantics = ["product name", "item name", "store name", "category name", "brand name"]
+    for tbl, cols in tbl_cols.items():
+        for cname, attr in cols:
+            for ns in name_semantics:
+                if ns in attr:
+                    rel.append({
+                        "table": tbl,
+                        "name_column": cname,
+                        "type": "name_column",
+                        "label": ns
+                    })
+
+    return rel[:50]
