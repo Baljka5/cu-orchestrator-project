@@ -12,13 +12,15 @@ from app.config import (
 )
 
 from app.core.llm import LLMClient
-from app.core.schema_registry import SchemaRegistry, TableInfo, build_relationships
-
+from app.core.schema_registry import SchemaRegistry, TableInfo
 
 llm = LLMClient()
 
 _registry = SchemaRegistry(SCHEMA_DICT_PATH)
 _registry.load()
+
+# ✅ relationships (dictionary-based)
+relationships = _registry.build_relationships()
 
 
 # -------------------------------
@@ -35,7 +37,7 @@ def _ch_client():
 
 
 # -------------------------------
-# Simple extractors (mongolian-friendly)
+# Simple extractors
 # -------------------------------
 def _extract_store_any(q: str) -> Optional[str]:
     m = re.search(r"(CU\d{3,4})", (q or "").upper())
@@ -63,19 +65,19 @@ def _is_most_sold_intent(q: str) -> bool:
     return any(k in ql for k in ["их зарагдсан", "хамгийн их", "most sold", "best seller", "их борлогдсон"])
 
 
+def _wants_name(q: str) -> bool:
+    ql = (q or "").lower()
+    return any(k in ql for k in ["нэр", "name", "title"])
+
+
 def _wants_amount(q: str) -> bool:
     ql = (q or "").lower()
     return any(k in ql for k in ["дүн", "орлого", "борлуулалтын дүн", "sales amount", "amount", "нет", "gross"])
 
 
 def _pick_metric_default(q: str) -> str:
-    """
-    If 'most sold' and not asking amount => prefer SoldQty.
-    Otherwise default NetSale.
-    """
     ql = (q or "").lower()
 
-    # explicit
     if any(k in ql for k in ["gross", "grosssale", "нийт"]):
         return "GrossSale"
     if any(k in ql for k in ["татвар", "vat", "tax"]):
@@ -85,7 +87,6 @@ def _pick_metric_default(q: str) -> str:
     if any(k in ql for k in ["өртөг", "cost", "actualcost"]):
         return "ActualCost"
 
-    # intent-based
     if _is_most_sold_intent(q) and not _wants_amount(q):
         return "SoldQty"
 
@@ -122,32 +123,12 @@ def _tables_in_sql(sql: str) -> set[str]:
 
 
 # -------------------------------
-# Helpers: pick columns from schema
+# Join hint builder (column-name overlap)
 # -------------------------------
-def _find_col(table: TableInfo, prefer: List[str]) -> Optional[str]:
-    cols = [c.name for c in table.columns]
-    lower_map = {c.lower(): c for c in cols}
-    for p in prefer:
-        if p.lower() in lower_map:
-            return lower_map[p.lower()]
-    return None
-
-
-def _guess_name_column(dim: TableInfo) -> Optional[str]:
-    # Typical item name columns
-    prefer = ["ITEM_NM", "GDS_NM", "ITEM_NAME", "NAME", "ITEMNAME", "GDS_NAME"]
-    return _find_col(dim, prefer)
-
-
 def _build_join_hints(candidates: List[TableInfo]) -> List[Dict[str, str]]:
-    """
-    Auto infer join hints: if two tables share same column name (case-insensitive),
-    we propose join edge. Prioritize keys like *_CD, *_ID, StoreID, GDS_CD, ITEM_CD, EVT_CD.
-    """
     if not candidates:
         return []
 
-    # map table -> columns set lower
     tcols = {}
     for t in candidates[:6]:
         tcols[t.table] = {c.name.lower(): c.name for c in t.columns}
@@ -163,14 +144,12 @@ def _build_join_hints(candidates: List[TableInfo]) -> List[Dict[str, str]]:
             if not common:
                 continue
 
-            # choose best key
             key = None
             for p in priority:
                 if p in common:
                     key = p
                     break
             if not key:
-                # fallback: *_cd or *_id
                 cd = [x for x in common if x.endswith("_cd")]
                 if cd:
                     key = sorted(cd)[0]
@@ -187,7 +166,6 @@ def _build_join_hints(candidates: List[TableInfo]) -> List[Dict[str, str]]:
                 "why": f"shared key {tcols[a][key]}"
             })
 
-    # keep small
     return hints[:12]
 
 
@@ -195,7 +173,6 @@ def _build_join_hints(candidates: List[TableInfo]) -> List[Dict[str, str]]:
 # PLAN -> SQL builder
 # -------------------------------
 def _normalize_table_name(name: str) -> str:
-    # allow db.table or table
     return (name or "").strip()
 
 
@@ -205,39 +182,22 @@ def _table_allowed(name: str, allowed: set[str]) -> bool:
     n = name.strip()
     if n in allowed:
         return True
-    # allow alias form "db.table alias"
     base = n.split()[0]
     return base in allowed
 
 
 def _build_sql_from_plan(
-    plan: Dict[str, Any],
-    allowed_tables: set[str],
-    candidates: List[TableInfo],
-    query: str,
+        plan: Dict[str, Any],
+        allowed_tables: set[str],
+        candidates: List[TableInfo],
+        query: str,
 ) -> Tuple[str, str]:
-    """
-    Build ClickHouse SQL deterministically.
-    Expected plan shape:
-    {
-      "fact_table": "Cluster_Main_Sales",
-      "select": [{"expr":"...","as":"..."}],
-      "joins": [{"type":"LEFT","table":"Dimension_IM","on":"f.GDS_CD = d1.GDS_CD"}],
-      "filters": ["toYear(f.SalesDate)=2025", ...],
-      "group_by": ["..."],
-      "order_by": [{"expr":"total_qty","dir":"DESC"}],
-      "limit": 20,
-      "notes": "..."
-    }
-    """
     notes = (plan.get("notes") or "").strip()
 
     fact = _normalize_table_name(plan.get("fact_table") or "")
     if not _table_allowed(fact, allowed_tables):
-        # fallback: best candidate
         fact = f"{candidates[0].db}.{candidates[0].table}" if candidates else CH_DEFAULT_TABLE
 
-    # alias
     fact_from = f"{fact} f"
 
     joins = plan.get("joins") or []
@@ -247,22 +207,21 @@ def _build_sql_from_plan(
         jtable = _normalize_table_name(j.get("table") or "")
         if not _table_allowed(jtable, allowed_tables):
             continue
+
         alias = f"d{idx}"
-        # if table already has alias in text, keep it
         base = jtable.split()[0]
         join_tbl = f"{base} {alias}"
         on = (j.get("on") or "").strip()
-        # enforce that on uses f. and d{idx}.
-        if "f." not in on or alias + "." not in on:
-            # attempt to map if user provided "im." etc -> replace with alias
-            # but keep it simple: if invalid, skip join
+
+        # must reference f. and correct alias
+        if "f." not in on or (alias + ".") not in on:
             continue
+
         join_sql_parts.append(f"{jtype} JOIN {join_tbl} ON {on}")
 
-    # SELECT
     select_items = plan.get("select") or []
     select_sql = []
-    for it in select_items[:10]:
+    for it in select_items[:12]:
         expr = (it.get("expr") or "").strip()
         alias = (it.get("as") or "").strip()
         if not expr:
@@ -273,16 +232,12 @@ def _build_sql_from_plan(
             select_sql.append(expr)
 
     if not select_sql:
-        # smart default for common questions
         metric = _pick_metric_default(query)
         select_sql = [f"sum(f.{metric}) AS value"]
 
-    # WHERE / PREWHERE
     filters = plan.get("filters") or []
     filters = [x.strip() for x in filters if isinstance(x, str) and x.strip()]
-    where_sql = ""
-    if filters:
-        where_sql = "WHERE " + "\n  AND ".join(filters)
+    where_sql = "WHERE " + "\n  AND ".join(filters) if filters else ""
 
     group_by = plan.get("group_by") or []
     group_by = [x.strip() for x in group_by if isinstance(x, str) and x.strip()]
@@ -301,28 +256,42 @@ def _build_sql_from_plan(
     limit = max(1, min(limit, min(CH_MAX_ROWS, 200)))
 
     sql = (
-        "SELECT\n  " + ",\n  ".join(select_sql) + "\n"
-        f"FROM {fact_from}\n"
-        + ("\n".join(join_sql_parts) + "\n" if join_sql_parts else "")
-        + (where_sql + "\n" if where_sql else "")
-        + (group_sql + "\n" if group_sql else "")
-        + (order_sql + "\n" if order_sql else "")
-        + f"LIMIT {limit}"
+            "SELECT\n  " + ",\n  ".join(select_sql) + "\n"
+                                                      f"FROM {fact_from}\n"
+            + ("\n".join(join_sql_parts) + "\n" if join_sql_parts else "")
+            + (where_sql + "\n" if where_sql else "")
+            + (group_sql + "\n" if group_sql else "")
+            + (order_sql + "\n" if order_sql else "")
+            + f"LIMIT {limit}"
     )
 
     return sql, notes
 
 
-async def _llm_generate_plan(query: str, schema_ctx: List[Dict[str, Any]], join_hints: List[Dict[str, str]]) -> Dict[str, Any]:
+# -------------------------------
+# LLM: generate plan / repair
+# -------------------------------
+async def _llm_generate_plan(query: str, schema_ctx: List[Dict[str, Any]], join_hints: List[Dict[str, str]]) -> Dict[
+    str, Any]:
     system = (
         "You are a ClickHouse analyst.\n"
         "Return ONLY JSON.\n"
         "Task: produce a QUERY PLAN (not SQL) from given schema candidates.\n"
+        "\n"
         "Rules:\n"
         "- Use only the provided candidate tables.\n"
-        "- If question asks 'хамгийн их зарагдсан/most sold' use SUM(quantity) not COUNT(*).\n"
-        "- Prefer joining dimension tables to get names (e.g., item name) when requested.\n"
         "- Always include a limit (<=200).\n"
+        "- If question asks 'хамгийн их зарагдсан/most sold' use SUM(quantity) not COUNT(*).\n"
+        "- If question asks for a human-readable name (contains 'нэр' or 'name'):\n"
+        "  * Use relationships to find a name_column (type=name_column).\n"
+        "  * JOIN the dimension table via a join_key relationship (type=join_key).\n"
+        "  * SELECT the name_column as item_name/store_name/... and GROUP BY the name column.\n"
+        "\n"
+        "Aliases:\n"
+        "- fact table alias = f\n"
+        "- joined tables aliases = d1, d2, d3...\n"
+        "- joins.on MUST look like: f.KEY = d1.KEY\n"
+        "\n"
         "Output JSON shape:\n"
         "{\n"
         '  "fact_table":"db.table or table",\n'
@@ -334,7 +303,6 @@ async def _llm_generate_plan(query: str, schema_ctx: List[Dict[str, Any]], join_
         '  "limit": 20,\n'
         '  "notes":"short"\n'
         "}\n"
-        "Important: in joins.on always use aliases: fact is f, joined tables are d1, d2, ...\n"
     )
 
     user = {
@@ -342,7 +310,7 @@ async def _llm_generate_plan(query: str, schema_ctx: List[Dict[str, Any]], join_
         "database_hint": CLICKHOUSE_DATABASE,
         "candidates": schema_ctx,
         "join_hints": join_hints,
-        "relationships": relationships
+        "relationships": relationships,
     }
 
     prompt = [
@@ -350,19 +318,26 @@ async def _llm_generate_plan(query: str, schema_ctx: List[Dict[str, Any]], join_
         {"role": "user", "content": json.dumps(user, ensure_ascii=False)},
     ]
 
-    out = await llm.chat(prompt, temperature=0.0, max_tokens=650)
-
+    out = await llm.chat(prompt, temperature=0.0, max_tokens=700)
     m = re.search(r"\{.*\}", out, re.DOTALL)
     raw = m.group(0) if m else out
     return json.loads(raw)
 
 
-async def _llm_repair_plan(query: str, schema_ctx: List[Dict[str, Any]], join_hints: List[Dict[str, str]], error: str, prev_plan: Dict[str, Any]) -> Dict[str, Any]:
+async def _llm_repair_plan(
+        query: str,
+        schema_ctx: List[Dict[str, Any]],
+        join_hints: List[Dict[str, str]],
+        error: str,
+        prev_plan: Dict[str, Any],
+) -> Dict[str, Any]:
     system = (
         "Return ONLY JSON.\n"
         "You will REPAIR the plan based on the error.\n"
-        "Use only candidate tables/columns. Keep joins aliases (f,d1,d2..).\n"
-        "Fix the error and return a corrected plan JSON with same shape."
+        "Use only candidate tables/columns.\n"
+        "Keep aliases strictly: fact=f, dims=d1,d2...\n"
+        "If the question asks for a name ('нэр'/'name'), ensure plan includes join to a dimension name_column.\n"
+        "Return corrected plan JSON with same shape."
     )
     user = {
         "question": query,
@@ -370,9 +345,13 @@ async def _llm_repair_plan(query: str, schema_ctx: List[Dict[str, Any]], join_hi
         "previous_plan": prev_plan,
         "candidates": schema_ctx,
         "join_hints": join_hints,
+        "relationships": relationships,
     }
-    prompt = [{"role": "system", "content": system}, {"role": "user", "content": json.dumps(user, ensure_ascii=False)}]
-    out = await llm.chat(prompt, temperature=0.0, max_tokens=650)
+    prompt = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": json.dumps(user, ensure_ascii=False)},
+    ]
+    out = await llm.chat(prompt, temperature=0.0, max_tokens=700)
     m = re.search(r"\{.*\}", out, re.DOTALL)
     raw = m.group(0) if m else out
     return json.loads(raw)
@@ -382,14 +361,6 @@ async def _llm_repair_plan(query: str, schema_ctx: List[Dict[str, Any]], join_hi
 # MAIN: agent entry
 # -------------------------------
 async def text2sql_answer(query: str) -> Dict[str, Any]:
-    """
-    Return dict for orchestrator:
-      {
-        "final_answer": "...",
-        "meta": {"sql": "...", "notes": "...", "data": {"columns":[...],"rows":[...]} }
-      }
-    """
-
     candidates = _registry.search(query, top_k=8)
     if not candidates:
         return {
@@ -400,7 +371,7 @@ async def text2sql_answer(query: str) -> Dict[str, Any]:
             "meta": {"agent": "text2sql"}
         }
 
-    # Build schema ctx with highlights
+    # schema ctx
     schema_ctx = []
     for t in candidates[:5]:
         cols = [{"name": c.name, "type": c.dtype, "desc": c.attr} for c in t.columns[:70]]
@@ -410,7 +381,7 @@ async def text2sql_answer(query: str) -> Dict[str, Any]:
             "entity": t.entity,
             "description": (t.description or "")[:220],
             "highlights": _registry.highlights(t),
-            "columns": cols
+            "columns": cols,
         })
 
     allowed_tables = set()
@@ -419,13 +390,8 @@ async def text2sql_answer(query: str) -> Dict[str, Any]:
         allowed_tables.add(f"{t.db}.{t.table}")
 
     join_hints = _build_join_hints(candidates[:6])
-
     client = _ch_client()
 
-    # ---- 1) PLAN from LLM
-    plan = {}
-    sql = ""
-    notes = ""
     try:
         plan = await _llm_generate_plan(query, schema_ctx, join_hints)
         sql, notes = _build_sql_from_plan(plan, allowed_tables, candidates, query)
@@ -443,9 +409,8 @@ async def text2sql_answer(query: str) -> Dict[str, Any]:
         cols = res.column_names
         rows = res.result_rows
 
+        # empty -> repair once
         if not rows:
-            # ---- 2) refine once: expand date window if it's "most sold" yearly queries etc.
-            # try repair plan
             plan2 = await _llm_repair_plan(query, schema_ctx, join_hints, "empty_result", plan)
             sql2, notes2 = _build_sql_from_plan(plan2, allowed_tables, candidates, query)
             if _is_safe_sql(sql2):
@@ -467,7 +432,7 @@ async def text2sql_answer(query: str) -> Dict[str, Any]:
 
             return {
                 "final_answer": f"Text2SQL\n{notes}\n(хоосон үр дүн)",
-                "meta": {"agent": "text2sql", "notes": notes, "sql": sql, "data": {"columns": cols, "rows": []}}
+                "meta": {"agent": "text2sql", "notes": notes, "sql": sql, "data": {"columns": cols, "rows": []}},
             }
 
         return {
@@ -481,7 +446,7 @@ async def text2sql_answer(query: str) -> Dict[str, Any]:
         }
 
     except Exception as llm_err:
-        # ---- 3) RULE fallback (existing idea, but return meta)
+        # RULE fallback
         try:
             store = _extract_store_any(query)
             days = _extract_days_any(query)

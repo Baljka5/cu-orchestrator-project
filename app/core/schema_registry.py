@@ -54,7 +54,7 @@ class SchemaRegistry:
             desc = v(row, "Description") or ""
             if not db or not tname:
                 continue
-            key = f"{db}::{tname}"
+            key = f"{str(db).strip()}::{str(tname).strip()}"
             table_rows[key] = {
                 "db": str(db).strip(),
                 "division": str(div).strip() if div else "",
@@ -83,6 +83,7 @@ class SchemaRegistry:
             if db:
                 key = f"{str(db).strip()}::{str(tname).strip()}"
             else:
+                # if DB missing on Column sheet, try match by table name
                 candidates = [k for k in table_rows.keys() if k.endswith(f"::{str(tname).strip()}")]
                 key = candidates[0] if candidates else None
 
@@ -107,24 +108,33 @@ class SchemaRegistry:
             self._index.append((blob, t))
 
     def highlights(self, t: TableInfo) -> Dict[str, List[str]]:
-        """
-        Helpful hints for LLM:
-        - date columns
-        - store/location columns
-        - metric-ish columns
-        """
         cols = [c.name for c in t.columns]
         lc = [x.lower() for x in cols]
 
-        date_cols = [cols[i] for i, x in enumerate(lc) if "date" in x or x.endswith("_dt") or x.endswith("dt")]
-        store_cols = [cols[i] for i, x in enumerate(lc) if x in ("storeid", "store_id", "bizloc_cd", "location", "locationid")]
-        metric_cols = [cols[i] for i, x in enumerate(lc) if x in ("netsale", "grosssale", "tax_vat", "discount", "actualcost", "soldqty", "qty")]
+        date_cols = [cols[i] for i, x in enumerate(lc) if ("date" in x) or x.endswith("_dt") or x.endswith("dt")]
+        store_cols = [cols[i] for i, x in enumerate(lc) if
+                      x in ("storeid", "store_id", "bizloc_cd", "location", "locationid")]
 
-        # keep short
+        metric_cols = [cols[i] for i, x in enumerate(lc) if x in (
+            "netsale", "grosssale", "tax_vat", "discount", "actualcost", "soldqty", "qty",
+            "value", "amount"
+        )]
+
+        key_cols = [cols[i] for i, x in enumerate(lc) if x in (
+            "gds_cd", "item_cd", "promotionid", "evt_cd", "receiptno", "bizloc_cd", "storeid"
+        )]
+
+        # name-like columns (best effort)
+        name_cols = [cols[i] for i, x in enumerate(lc) if x in (
+            "gds_nm", "item_nm", "name", "item_name", "gds_label_nm", "store_nm", "cate_nm", "brand_nm"
+        )]
+
         return {
             "date_cols": date_cols[:6],
             "store_cols": store_cols[:6],
             "metric_cols": metric_cols[:10],
+            "key_cols": key_cols[:10],
+            "name_cols": name_cols[:10],
         }
 
     def search(self, query: str, top_k: int = 8) -> List[TableInfo]:
@@ -146,46 +156,72 @@ class SchemaRegistry:
         scored.sort(key=lambda x: x[0], reverse=True)
         return [t for s, t in scored if s > 0][:top_k]
 
+    def build_relationships(self) -> List[Dict]:
+        """
+        Build relationships from dictionary semantics (Attribute Name).
+        Returns list of:
+          - {"left":"T1.COL","right":"T2.COL","type":"join_key","label":"product code"}
+          - {"table":"Dimension_IM","name_column":"GDS_NM","type":"name_column","label":"product name"}
+        """
+        rel: List[Dict] = []
 
-def build_relationships(self) -> list[dict]:
-    rel = []
+        # table -> [(col, attr_lower)]
+        tbl_cols: Dict[str, List[Tuple[str, str]]] = {}
+        for t in self.tables:
+            tbl_cols[t.table] = [(c.name, (c.attr or "").lower()) for c in t.columns]
 
-    tbl_cols = {}
-    for t in self.tables:
-        tbl_cols[t.table] = [(c.name, (c.attr or "").lower()) for c in t.columns]
+        # semantics that often represent join keys
+        semantic_keys = [
+            "product code",
+            "item code",
+            "store number",
+            "promotion id",
+            "event code",
+            "receipt no",
+            "category code",
+            "brand code",
+        ]
 
-    semantic_keys = [
-        "product code", "item code", "store number", "promotion id", "campaign", "event code"
-    ]
+        for key in semantic_keys:
+            occ: List[Tuple[str, str, str]] = []
+            for tbl, cols in tbl_cols.items():
+                for cname, attr in cols:
+                    if key in attr:
+                        occ.append((tbl, cname, key))
 
-    for key in semantic_keys:
-        occ = []
+            for i in range(len(occ)):
+                for j in range(i + 1, len(occ)):
+                    a = occ[i]
+                    b = occ[j]
+                    if a[0] != b[0]:
+                        rel.append({
+                            "left": f"{a[0]}.{a[1]}",
+                            "right": f"{b[0]}.{b[1]}",
+                            "type": "join_key",
+                            "label": key
+                        })
+
+        # semantics that represent human readable names
+        name_semantics = [
+            "product name",
+            "item name",
+            "store name",
+            "category name",
+            "brand name",
+            "customer name",
+            "vendor name",
+        ]
+
         for tbl, cols in tbl_cols.items():
             for cname, attr in cols:
-                if key in attr:
-                    occ.append((tbl, cname, key))
-        # create pairwise relationships
-        for i in range(len(occ)):
-            for j in range(i+1, len(occ)):
-                a = occ[i]; b = occ[j]
-                if a[0] != b[0]:
-                    rel.append({
-                        "left": f"{a[0]}.{a[1]}",
-                        "right": f"{b[0]}.{b[1]}",
-                        "type": "join_key",
-                        "label": key
-                    })
+                for ns in name_semantics:
+                    if ns in attr:
+                        rel.append({
+                            "table": tbl,
+                            "name_column": cname,
+                            "type": "name_column",
+                            "label": ns
+                        })
 
-    name_semantics = ["product name", "item name", "store name", "category name", "brand name"]
-    for tbl, cols in tbl_cols.items():
-        for cname, attr in cols:
-            for ns in name_semantics:
-                if ns in attr:
-                    rel.append({
-                        "table": tbl,
-                        "name_column": cname,
-                        "type": "name_column",
-                        "label": ns
-                    })
-
-    return rel[:50]
+        # keep small
+        return rel[:80]
