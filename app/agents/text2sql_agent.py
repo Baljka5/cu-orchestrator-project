@@ -14,6 +14,7 @@ from app.config import CH_DEFAULT_TABLE, CH_DEFAULT_STORE_COL, CH_DEFAULT_DATE_C
 
 from datetime import date, timedelta
 from app.config import CH_FALLBACK_TABLES
+from app.core.llm_client import chat_completion
 
 llm = LLMClient()
 
@@ -195,11 +196,10 @@ async def text2sql_answer(query: str) -> str:
                 "You generate SAFE ClickHouse SELECT queries. Reply ONLY JSON.\n"
                 "Rules:\n"
                 "- Only SELECT (no DDL/DML)\n"
-                "- Use ONLY these tables: " + ", ".join(sorted(list(allowed_tables))) + "\n"
-                                                                                        "- Prefer provided candidates schema\n"
-                                                                                        "- Always include a LIMIT\n"
-                                                                                        "- If unclear, exploratory SELECT * LIMIT 20 on best candidate.\n"
-                                                                                        "Output JSON: {\"sql\":\"...\",\"notes\":\"...\"}"
+                "- Prefer the provided tables/columns\n"
+                "- Always include a LIMIT\n"
+                "- If unclear, return exploratory SELECT * LIMIT 20 on the best candidate table.\n"
+                "Output JSON: {\"sql\":\"...\",\"notes\":\"...\"}"
              },
             {"role": "user", "content": json.dumps({
                 "question": query,
@@ -208,7 +208,15 @@ async def text2sql_answer(query: str) -> str:
             }, ensure_ascii=False)}
         ]
 
-        out = await llm.chat(prompt, temperature=0.0, max_tokens=550)
+        system_msg = prompt[0]["content"]
+        user_msg = prompt[1]["content"]
+
+        out = await chat_completion(
+            user_message=user_msg,
+            system=system_msg,
+            temperature=0.0,
+            max_tokens=550,
+        )
         m = re.search(r"\{.*\}", out, re.DOTALL)
         data = json.loads(m.group(0) if m else out)
 
