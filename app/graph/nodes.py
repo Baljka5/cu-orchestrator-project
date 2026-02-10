@@ -5,6 +5,7 @@ from app.core.schemas import OrchestratorState, ClassificationResult
 from app.core.schema_registry import SchemaRegistry
 from app.config import SCHEMA_DICT_PATH
 from app.core.llm_client import chat_completion
+from app.agents.text2sql_agent import text2sql_answer
 
 # Dictionary schema registry (xlsx)
 _registry = SchemaRegistry(SCHEMA_DICT_PATH)
@@ -74,43 +75,12 @@ async def node_run_llm_general(state: OrchestratorState) -> OrchestratorState:
 
 
 async def node_run_text2sql(state: OrchestratorState) -> OrchestratorState:
-    """
-    LLM generates SQL only, with dynamic schema from dictionary.
-    (Хэрвээ чи SQL+DATA буцаадаг болгохыг хүсвэл дараа нь энэ node дээр
-     text2sql_answer() дууддаг болгож болно.)
-    """
     q = (state.normalized_message or state.raw_message or "").strip()
 
-    candidates = _registry.search(q, top_k=8)
-    if not candidates:
-        state.final_answer = "SELECT 'UNKNOWN_SCHEMA' AS error;"
-        state.meta["agent"] = "text2sql"
-        state.meta["mode"] = "sql"
-        return state
+    # ✅ энэ нь ClickHouse руу query гүйцэтгэж SQL + DATA буцаана
+    answer = await text2sql_answer(q)
 
-    schema_txt = _build_schema_text_from_candidates(candidates, max_tables=5, max_cols=60)
-
-    system = f"""
-Та ClickHouse SQL бичдэг туслах.
-Зөвхөн ClickHouse SELECT query буцаа (тайлбаргүй, markdown биш).
-Хэрэв шаардлагатай column/table schema-д байхгүй бол:
-SELECT 'UNKNOWN_SCHEMA' AS error;
-
-Доорх schema-г л ашигла:
-
-{schema_txt}
-
-Дүрэм:
-- Огноо фильтерт schema дээрх date баганыг ашигла (ихэвчлэн SalesDate).
-- Жилийн дүн гэвэл toYear(date_col)=YYYY эсвэл date range ашигла.
-- Борлуулалтын дүн гэвэл NetSale/NetSales аль тохирохыг schema-аас сонго.
-- Хэрвээ асуулт тодорхойгүй бол хамгийн боломжит table дээр:
-  SELECT * FROM <table> LIMIT 20;
-""".strip()
-
-    sql = await chat_completion(q, system=system)
-
-    state.final_answer = sql
+    state.final_answer = answer
     state.meta["agent"] = "text2sql"
-    state.meta["mode"] = "sql"
+    state.meta["mode"] = "sql"  # routes.py танина
     return state
