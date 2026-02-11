@@ -19,10 +19,6 @@ def _auth():
     return None
 
 async def fetch_schema_markdown() -> str:
-    """
-    ClickHouse schema-г бага хэмжээний markdown болгож буцаана.
-    Model-д prompt болгон ашиглана.
-    """
     if not CH_HOST or not CH_DATABASE:
         return "ClickHouse schema not configured."
 

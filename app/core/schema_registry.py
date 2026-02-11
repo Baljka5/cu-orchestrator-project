@@ -32,15 +32,6 @@ def _canon(s: Optional[str]) -> str:
 
 
 class SchemaRegistry:
-    """
-    Loads schema dictionary from xlsx with sheets:
-      - Table  (columns: DB, Division of work, Table Name, Entity Name, Description, ...)
-      - Column (columns: DB, Table Name, Column Name, Attribute Name, Datatype, ...)
-    Provides:
-      - search(query): best candidate tables
-      - highlights(table): heuristics for date/store/metric/name/key columns
-      - build_relationships(): scored join graph + name columns
-    """
 
     def __init__(self, xlsx_path: str):
         self.xlsx_path = xlsx_path
@@ -56,7 +47,6 @@ class SchemaRegistry:
         sh_table = wb["Table"]
         sh_col = wb["Column"]
 
-        # ---- Table sheet header map
         header = [c.value for c in next(sh_table.iter_rows(min_row=1, max_row=1))]
         col_map = {name: i for i, name in enumerate(header) if name}
 
@@ -86,7 +76,6 @@ class SchemaRegistry:
                 "columns": []
             }
 
-        # ---- Column sheet header map
         header2 = [c.value for c in next(sh_col.iter_rows(min_row=1, max_row=1))]
         col_map2 = {name: i for i, name in enumerate(header2) if name}
 
@@ -106,7 +95,6 @@ class SchemaRegistry:
             if db:
                 key = f"{_norm(db)}::{_norm(tname)}"
             else:
-                # if DB missing on Column sheet, try match by table name
                 candidates = [k for k in table_rows.keys() if k.endswith(f"::{_norm(tname)}")]
                 key = candidates[0] if candidates else None
 
@@ -121,7 +109,6 @@ class SchemaRegistry:
 
         self.tables = [TableInfo(**t) for t in table_rows.values()]
 
-        # Build a simple searchable blob index
         self._index = []
         for t in self.tables:
             blob = " ".join([
@@ -179,20 +166,10 @@ class SchemaRegistry:
         return [t for s, t in scored if s > 0][:top_k]
 
     # -------------------------------
-    # Relationships (scored + overrides)
-    # -------------------------------
     def build_relationships(self) -> List[Dict[str, Any]]:
-        """
-        Build relationships from dictionary semantics (Attribute Name) AND column name hints.
-
-        Returns list of:
-          - {"left":"T1.COL","right":"T2.COL","type":"join_key","label":"product","score": 23}
-          - {"table":"Dimension_IM","name_column":"GDS_NM","type":"name_column","label":"product name","score": 10}
-        """
 
         rel: List[Dict[str, Any]] = []
 
-        # table -> list of dicts {name, attr_lower, canon}
         tbl_cols: Dict[str, List[Dict[str, str]]] = {}
         for t in self.tables:
             tbl_cols[t.table] = [{
@@ -201,8 +178,6 @@ class SchemaRegistry:
                 "canon": _canon(c.name),
             } for c in t.columns]
 
-        # --- Manual high-confidence overrides (your core use-case)
-        # You can add more here if needed.
         rel.append({
             "left": "Cluster_Main_Sales.GDS_CD",
             "right": "Dimension_IM.GDS_CD",
@@ -218,7 +193,6 @@ class SchemaRegistry:
             "score": 999
         })
 
-        # Canonical join key groups
         JOIN_CANON = {
             "product": {"gds_cd", "productcode", "product_cd", "gdsid"},
             "item": {"item_cd", "itemcode", "itemid"},
@@ -231,7 +205,6 @@ class SchemaRegistry:
             "vendor": {"ven_cd", "repr_ven_cd", "vendor_cd"},
         }
 
-        # Semantic labels found in Attribute Name
         SEMANTIC_KEYS = {
             "product": ["product code"],
             "item": ["item code"],
@@ -244,7 +217,6 @@ class SchemaRegistry:
             "vendor": ["vendor", "customer code"],
         }
 
-        # Collect occurrences per group: (table, colname, score_piece)
         occ_by_group: Dict[str, List[Tuple[str, str, int]]] = {g: [] for g in JOIN_CANON.keys()}
 
         for tbl, cols in tbl_cols.items():
@@ -255,15 +227,12 @@ class SchemaRegistry:
                 for group, canon_set in JOIN_CANON.items():
                     score = 0
 
-                    # Column name matching
                     if canon in canon_set:
                         score += 10
                     else:
-                        # partial match: e.g. endswith _cd
                         if canon.endswith("_cd") and any(x.endswith("_cd") for x in canon_set):
                             score += 2
 
-                    # Attribute semantics matching
                     for phrase in SEMANTIC_KEYS.get(group, []):
                         if phrase in attr:
                             score += 6
@@ -271,11 +240,8 @@ class SchemaRegistry:
                     if score > 0:
                         occ_by_group[group].append((tbl, c["name"], score))
 
-        # Build join edges within each group using top occurrences only
-        # Keep it small and high-quality.
         edges: List[Dict[str, Any]] = []
         for group, occ in occ_by_group.items():
-            # sort occurrences by score desc
             occ_sorted = sorted(occ, key=lambda x: x[2], reverse=True)[:20]
 
             for i in range(len(occ_sorted)):
@@ -285,10 +251,8 @@ class SchemaRegistry:
                     if t1 == t2:
                         continue
 
-                    # edge score: prefer both high
                     es = s1 + s2
 
-                    # prefer exact same column canonical
                     if _canon(c1) == _canon(c2):
                         es += 5
 
@@ -300,7 +264,6 @@ class SchemaRegistry:
                         "score": es,
                     })
 
-        # Deduplicate edges (A.B == B.A)
         seen = set()
         edges2 = []
         for e in sorted(edges, key=lambda x: x["score"], reverse=True):
@@ -312,7 +275,6 @@ class SchemaRegistry:
             seen.add(key)
             edges2.append(e)
 
-        # Name columns from Attribute semantics + column name hints
         name_edges: List[Dict[str, Any]] = []
         name_semantics = [
             "product name", "item name", "store name",
@@ -344,10 +306,8 @@ class SchemaRegistry:
                         "score": score,
                     })
 
-        # Merge everything
         rel.extend(edges2[:120])       # join keys
         rel.extend(sorted(name_edges, key=lambda x: x["score"], reverse=True)[:60])  # name cols
 
-        # keep small overall
         rel = sorted(rel, key=lambda x: x.get("score", 0), reverse=True)[:140]
         return rel

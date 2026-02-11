@@ -1,5 +1,3 @@
-# ClickHouse schema catalog (hand-curated first, later auto-sync from system.columns)
-
 SCHEMA = {
     "Cluster_Main_Sales": {
         "entity": "Sales in BGF",

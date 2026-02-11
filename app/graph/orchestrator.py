@@ -4,7 +4,6 @@ from app.graph.nodes import node_classify, node_run_text2sql, node_run_llm_gener
 
 class Graph:
     async def ainvoke(self, state: OrchestratorState) -> dict:
-        # normalize
         state.normalized_message = (state.raw_message or "").strip()
 
         state = await node_classify(state)
