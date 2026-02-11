@@ -118,34 +118,6 @@ class SchemaRegistry:
             ]).lower()
             self._index.append((blob, t))
 
-    def highlights(self, t: TableInfo) -> Dict[str, List[str]]:
-        cols = [c.name for c in t.columns]
-        lc = [x.lower() for x in cols]
-
-        date_cols = [cols[i] for i, x in enumerate(lc) if ("date" in x) or x.endswith("_dt") or x.endswith("dt")]
-        store_cols = [cols[i] for i, x in enumerate(lc) if x in ("storeid", "store_id", "bizloc_cd", "location", "locationid")]
-
-        metric_cols = [cols[i] for i, x in enumerate(lc) if x in (
-            "netsale", "grosssale", "tax_vat", "discount", "actualcost", "soldqty", "qty",
-            "value", "amount"
-        )]
-
-        key_cols = [cols[i] for i, x in enumerate(lc) if x in (
-            "gds_cd", "item_cd", "promotionid", "evt_cd", "receiptno", "bizloc_cd", "storeid", "cate_cd"
-        )]
-
-        name_cols = [cols[i] for i, x in enumerate(lc) if x in (
-            "gds_nm", "item_nm", "name", "item_name", "gds_label_nm", "store_nm", "cate_nm", "brand_nm"
-        )]
-
-        return {
-            "date_cols": date_cols[:6],
-            "store_cols": store_cols[:6],
-            "metric_cols": metric_cols[:10],
-            "key_cols": key_cols[:10],
-            "name_cols": name_cols[:10],
-        }
-
     def search(self, query: str, top_k: int = 8) -> List[TableInfo]:
         q = (query or "").lower().strip()
         if not q:
@@ -153,6 +125,7 @@ class SchemaRegistry:
 
         tokens = [x for x in re.split(r"[^a-z0-9_]+", q) if x]
         scored: List[Tuple[int, TableInfo]] = []
+
         for blob, t in self._index:
             score = 0
             for tok in tokens:
@@ -165,19 +138,34 @@ class SchemaRegistry:
         scored.sort(key=lambda x: x[0], reverse=True)
         return [t for s, t in scored if s > 0][:top_k]
 
-    # -------------------------------
-    def build_relationships(self) -> List[Dict[str, Any]]:
+    def highlights(self, t: TableInfo) -> Dict[str, List[str]]:
+        cols = [c.name for c in t.columns]
+        lc = [x.lower() for x in cols]
 
+        date_cols = [cols[i] for i, x in enumerate(lc) if "date" in x or x.endswith("_dt")]
+        store_cols = [cols[i] for i, x in enumerate(lc) if x in ("storeid", "store_id", "bizloc_cd")]
+        metric_cols = [cols[i] for i, x in enumerate(lc) if x in (
+            "netsale", "grosssale", "tax_vat", "discount", "actualcost", "soldqty"
+        )]
+        key_cols = [cols[i] for i, x in enumerate(lc) if x in (
+            "gds_cd", "item_cd", "promotionid", "evt_cd", "receiptno", "cate_cd"
+        )]
+        name_cols = [cols[i] for i, x in enumerate(lc) if x in (
+            "gds_nm", "item_nm", "store_nm", "cate_nm", "brand_nm", "gds_label_nm"
+        )]
+
+        return {
+            "date_cols": date_cols[:6],
+            "store_cols": store_cols[:6],
+            "metric_cols": metric_cols[:10],
+            "key_cols": key_cols[:10],
+            "name_cols": name_cols[:10],
+        }
+
+    def build_relationships(self) -> List[Dict[str, Any]]:
         rel: List[Dict[str, Any]] = []
 
-        tbl_cols: Dict[str, List[Dict[str, str]]] = {}
-        for t in self.tables:
-            tbl_cols[t.table] = [{
-                "name": c.name,
-                "attr": (c.attr or "").lower(),
-                "canon": _canon(c.name),
-            } for c in t.columns]
-
+        # Manual high-confidence overrides
         rel.append({
             "left": "Cluster_Main_Sales.GDS_CD",
             "right": "Dimension_IM.GDS_CD",
@@ -193,121 +181,63 @@ class SchemaRegistry:
             "score": 999
         })
 
+        # Build dynamic relationships
+        tbl_cols: Dict[str, List[Dict[str, str]]] = {}
+        for t in self.tables:
+            tbl_cols[t.table] = [{
+                "name": c.name,
+                "attr": (c.attr or "").lower(),
+                "canon": _canon(c.name),
+            } for c in t.columns]
+
         JOIN_CANON = {
-            "product": {"gds_cd", "productcode", "product_cd", "gdsid"},
-            "item": {"item_cd", "itemcode", "itemid"},
-            "store": {"storeid", "store_id", "bizloc_cd", "locationid", "location"},
-            "category": {"cate_cd", "categorycode", "category_cd"},
-            "receipt": {"receiptno", "receipt_no"},
-            "promotion": {"promotionid", "promotion_id"},
-            "event": {"evt_cd", "eventcode"},
-            "brand": {"brand_cd", "gds_brnd_cd", "repr_brnd_cd"},
-            "vendor": {"ven_cd", "repr_ven_cd", "vendor_cd"},
+            "product": {"gds_cd"},
+            "item": {"item_cd"},
+            "store": {"storeid", "store_id", "bizloc_cd"},
+            "category": {"cate_cd"},
+            "receipt": {"receiptno"},
+            "promotion": {"promotionid"},
+            "event": {"evt_cd"},
         }
 
-        SEMANTIC_KEYS = {
-            "product": ["product code"],
-            "item": ["item code"],
-            "store": ["store number", "location", "store code"],
-            "category": ["category code"],
-            "receipt": ["receipt no", "receipt number"],
-            "promotion": ["promotion id"],
-            "event": ["event code"],
-            "brand": ["brand code"],
-            "vendor": ["vendor", "customer code"],
-        }
-
-        occ_by_group: Dict[str, List[Tuple[str, str, int]]] = {g: [] for g in JOIN_CANON.keys()}
-
-        for tbl, cols in tbl_cols.items():
-            for c in cols:
-                canon = c["canon"]
-                attr = c["attr"]
-
-                for group, canon_set in JOIN_CANON.items():
+        for group, canon_set in JOIN_CANON.items():
+            occ = []
+            for tbl, cols in tbl_cols.items():
+                for c in cols:
                     score = 0
-
-                    if canon in canon_set:
+                    if c["canon"] in canon_set:
                         score += 10
-                    else:
-                        if canon.endswith("_cd") and any(x.endswith("_cd") for x in canon_set):
-                            score += 2
-
-                    for phrase in SEMANTIC_KEYS.get(group, []):
-                        if phrase in attr:
-                            score += 6
-
+                    if group in c["attr"]:
+                        score += 5
                     if score > 0:
-                        occ_by_group[group].append((tbl, c["name"], score))
+                        occ.append((tbl, c["name"], score))
 
-        edges: List[Dict[str, Any]] = []
-        for group, occ in occ_by_group.items():
-            occ_sorted = sorted(occ, key=lambda x: x[2], reverse=True)[:20]
+            occ = sorted(occ, key=lambda x: x[2], reverse=True)[:20]
 
-            for i in range(len(occ_sorted)):
-                for j in range(i + 1, len(occ_sorted)):
-                    t1, c1, s1 = occ_sorted[i]
-                    t2, c2, s2 = occ_sorted[j]
+            for i in range(len(occ)):
+                for j in range(i + 1, len(occ)):
+                    t1, c1, s1 = occ[i]
+                    t2, c2, s2 = occ[j]
                     if t1 == t2:
                         continue
-
-                    es = s1 + s2
-
-                    if _canon(c1) == _canon(c2):
-                        es += 5
-
-                    edges.append({
+                    rel.append({
                         "left": f"{t1}.{c1}",
                         "right": f"{t2}.{c2}",
                         "type": "join_key",
                         "label": group,
-                        "score": es,
+                        "score": s1 + s2
                     })
-
-        seen = set()
-        edges2 = []
-        for e in sorted(edges, key=lambda x: x["score"], reverse=True):
-            a = e["left"]
-            b = e["right"]
-            key = "||".join(sorted([a, b])) + f"::{e['label']}"
-            if key in seen:
-                continue
-            seen.add(key)
-            edges2.append(e)
-
-        name_edges: List[Dict[str, Any]] = []
-        name_semantics = [
-            "product name", "item name", "store name",
-            "category name", "brand name", "customer name", "vendor name",
-        ]
-        name_col_candidates = {"gds_nm", "item_nm", "store_nm", "cate_nm", "brand_nm", "gds_label_nm"}
 
         for tbl, cols in tbl_cols.items():
             for c in cols:
-                canon = c["canon"]
-                attr = c["attr"]
-                score = 0
-                label = None
-
-                if canon in name_col_candidates:
-                    score += 8
-                for ns in name_semantics:
-                    if ns in attr:
-                        score += 6
-                        label = ns
-                        break
-
-                if score > 0:
-                    name_edges.append({
+                if "name" in c["attr"] or c["canon"] in ("gds_nm", "item_nm"):
+                    rel.append({
                         "table": tbl,
                         "name_column": c["name"],
                         "type": "name_column",
-                        "label": label or "name",
-                        "score": score,
+                        "label": "name",
+                        "score": 10
                     })
 
-        rel.extend(edges2[:120])       # join keys
-        rel.extend(sorted(name_edges, key=lambda x: x["score"], reverse=True)[:60])  # name cols
-
-        rel = sorted(rel, key=lambda x: x.get("score", 0), reverse=True)[:140]
-        return rel
+        rel.sort(key=lambda x: x.get("score", 0), reverse=True)
+        return rel[:120]
