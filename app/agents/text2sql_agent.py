@@ -3,7 +3,7 @@ import re
 import json
 import clickhouse_connect
 from datetime import date, timedelta
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Set
 
 from app.config import (
     CLICKHOUSE_HOST, CLICKHOUSE_PORT, CLICKHOUSE_USER, CLICKHOUSE_PASSWORD, CLICKHOUSE_DATABASE,
@@ -19,8 +19,8 @@ llm = LLMClient()
 _registry = SchemaRegistry(SCHEMA_DICT_PATH)
 _registry.load()
 
-# ✅ relationships (dictionary-based)
-relationships = _registry.build_relationships()
+# All relationships (we will FILTER by candidates at runtime)
+_all_relationships = _registry.build_relationships()
 
 
 # -------------------------------
@@ -115,7 +115,7 @@ def _enforce_limit(sql: str, max_rows: int) -> str:
     return f"{s}\nLIMIT {max_rows}"
 
 
-def _tables_in_sql(sql: str) -> set[str]:
+def _tables_in_sql(sql: str) -> Set[str]:
     found = set()
     for m in re.finditer(r"\b(from|join)\s+([a-zA-Z0-9_\.]+)", sql, flags=re.IGNORECASE):
         found.add(m.group(2))
@@ -123,7 +123,29 @@ def _tables_in_sql(sql: str) -> set[str]:
 
 
 # -------------------------------
-# Join hint builder (column-name overlap)
+# Relationships filtering by candidates
+# -------------------------------
+def _filter_relationships(candidates: List[TableInfo], max_items: int = 60) -> List[Dict[str, Any]]:
+    cand_tables = {t.table for t in candidates[:6]}
+    rel_filtered: List[Dict[str, Any]] = []
+
+    for r in _all_relationships:
+        if r.get("type") == "join_key":
+            lt = (r.get("left") or "").split(".", 1)[0]
+            rt = (r.get("right") or "").split(".", 1)[0]
+            if lt in cand_tables and rt in cand_tables:
+                rel_filtered.append(r)
+        elif r.get("type") == "name_column":
+            if r.get("table") in cand_tables:
+                rel_filtered.append(r)
+
+    # keep best scores first
+    rel_filtered.sort(key=lambda x: x.get("score", 0), reverse=True)
+    return rel_filtered[:max_items]
+
+
+# -------------------------------
+# Join hint builder (column-name overlap) - improved
 # -------------------------------
 def _build_join_hints(candidates: List[TableInfo]) -> List[Dict[str, str]]:
     if not candidates:
@@ -133,7 +155,7 @@ def _build_join_hints(candidates: List[TableInfo]) -> List[Dict[str, str]]:
     for t in candidates[:6]:
         tcols[t.table] = {c.name.lower(): c.name for c in t.columns}
 
-    priority = ["gds_cd", "item_cd", "storeid", "store_id", "bizloc_cd", "evt_cd", "promotionid", "receiptno"]
+    priority = ["gds_cd", "item_cd", "storeid", "store_id", "bizloc_cd", "evt_cd", "promotionid", "receiptno", "cate_cd"]
 
     hints = []
     names = list(tcols.keys())
@@ -170,13 +192,13 @@ def _build_join_hints(candidates: List[TableInfo]) -> List[Dict[str, str]]:
 
 
 # -------------------------------
-# PLAN -> SQL builder
+# PLAN -> SQL builder helpers
 # -------------------------------
 def _normalize_table_name(name: str) -> str:
     return (name or "").strip()
 
 
-def _table_allowed(name: str, allowed: set[str]) -> bool:
+def _table_allowed(name: str, allowed: Set[str]) -> bool:
     if not name:
         return False
     n = name.strip()
@@ -187,10 +209,10 @@ def _table_allowed(name: str, allowed: set[str]) -> bool:
 
 
 def _build_sql_from_plan(
-        plan: Dict[str, Any],
-        allowed_tables: set[str],
-        candidates: List[TableInfo],
-        query: str,
+    plan: Dict[str, Any],
+    allowed_tables: Set[str],
+    candidates: List[TableInfo],
+    query: str,
 ) -> Tuple[str, str]:
     notes = (plan.get("notes") or "").strip()
 
@@ -256,23 +278,112 @@ def _build_sql_from_plan(
     limit = max(1, min(limit, min(CH_MAX_ROWS, 200)))
 
     sql = (
-            "SELECT\n  " + ",\n  ".join(select_sql) + "\n"
-                                                      f"FROM {fact_from}\n"
-            + ("\n".join(join_sql_parts) + "\n" if join_sql_parts else "")
-            + (where_sql + "\n" if where_sql else "")
-            + (group_sql + "\n" if group_sql else "")
-            + (order_sql + "\n" if order_sql else "")
-            + f"LIMIT {limit}"
+        "SELECT\n  " + ",\n  ".join(select_sql) + "\n"
+        f"FROM {fact_from}\n"
+        + ("\n".join(join_sql_parts) + "\n" if join_sql_parts else "")
+        + (where_sql + "\n" if where_sql else "")
+        + (group_sql + "\n" if group_sql else "")
+        + (order_sql + "\n" if order_sql else "")
+        + f"LIMIT {limit}"
     )
 
     return sql, notes
 
 
 # -------------------------------
+# Deterministic JOIN injection when name intent is present
+# -------------------------------
+def _ensure_name_join_in_plan(
+    plan: Dict[str, Any],
+    candidates: List[TableInfo],
+    rel_filtered: List[Dict[str, Any]],
+    query: str
+) -> Dict[str, Any]:
+    """
+    If question asks for human-readable name, force:
+      - join to a dimension that has a name_column (prefer product/item name)
+      - join key between fact and that dimension
+      - select name column and group by it
+    """
+    if not _wants_name(query):
+        return plan
+
+    # Identify fact table name (table only)
+    fact_tbl_full = (plan.get("fact_table") or "").strip()
+    fact_tbl = fact_tbl_full.split(".")[-1] if fact_tbl_full else (candidates[0].table if candidates else "")
+
+    name_cols = [r for r in rel_filtered if r.get("type") == "name_column"]
+    join_keys = [r for r in rel_filtered if r.get("type") == "join_key"]
+
+    if not name_cols or not join_keys or not fact_tbl:
+        return plan
+
+    # Prefer product name / item name
+    target_name = None
+    for r in name_cols:
+        if r.get("label") in ("product name", "item name"):
+            target_name = r
+            break
+    target_name = target_name or name_cols[0]
+
+    dim_tbl = target_name.get("table")
+    name_col = target_name.get("name_column")
+    if not dim_tbl or not name_col:
+        return plan
+
+    # Find join key edge between fact_tbl and dim_tbl
+    jk = None
+    for r in join_keys:
+        lt, lc = (r.get("left") or "").split(".", 1)
+        rt, rc = (r.get("right") or "").split(".", 1)
+        if (lt == fact_tbl and rt == dim_tbl) or (rt == fact_tbl and lt == dim_tbl):
+            jk = r
+            break
+
+    if not jk:
+        return plan
+
+    # Ensure joins exists
+    plan.setdefault("joins", [])
+    if len(plan["joins"]) == 0:
+        lt, lc = (jk["left"]).split(".", 1)
+        rt, rc = (jk["right"]).split(".", 1)
+
+        # Force fact=f, dim=d1
+        if lt == fact_tbl:
+            on = f"f.{lc} = d1.{rc}"
+        else:
+            on = f"f.{rc} = d1.{lc}"
+
+        plan["joins"].append({
+            "type": "LEFT",
+            "table": dim_tbl,
+            "on": on
+        })
+
+    # Ensure name selected
+    plan.setdefault("select", [])
+    sel_exprs = [x.get("expr", "") for x in plan["select"] if isinstance(x, dict)]
+    if not any(f".{name_col}" in e or name_col in e for e in sel_exprs):
+        plan["select"].insert(0, {"expr": f"d1.{name_col}", "as": "item_name"})
+
+    # Ensure group_by includes name
+    plan.setdefault("group_by", [])
+    if not any(name_col in g for g in plan["group_by"]):
+        plan["group_by"].insert(0, f"d1.{name_col}")
+
+    return plan
+
+
+# -------------------------------
 # LLM: generate plan / repair
 # -------------------------------
-async def _llm_generate_plan(query: str, schema_ctx: List[Dict[str, Any]], join_hints: List[Dict[str, str]]) -> Dict[
-    str, Any]:
+async def _llm_generate_plan(
+    query: str,
+    schema_ctx: List[Dict[str, Any]],
+    join_hints: List[Dict[str, str]],
+    rel_filtered: List[Dict[str, Any]],
+) -> Dict[str, Any]:
     system = (
         "You are a ClickHouse analyst.\n"
         "Return ONLY JSON.\n"
@@ -310,7 +421,7 @@ async def _llm_generate_plan(query: str, schema_ctx: List[Dict[str, Any]], join_
         "database_hint": CLICKHOUSE_DATABASE,
         "candidates": schema_ctx,
         "join_hints": join_hints,
-        "relationships": relationships,
+        "relationships": rel_filtered,
     }
 
     prompt = [
@@ -325,11 +436,12 @@ async def _llm_generate_plan(query: str, schema_ctx: List[Dict[str, Any]], join_
 
 
 async def _llm_repair_plan(
-        query: str,
-        schema_ctx: List[Dict[str, Any]],
-        join_hints: List[Dict[str, str]],
-        error: str,
-        prev_plan: Dict[str, Any],
+    query: str,
+    schema_ctx: List[Dict[str, Any]],
+    join_hints: List[Dict[str, str]],
+    rel_filtered: List[Dict[str, Any]],
+    error: str,
+    prev_plan: Dict[str, Any],
 ) -> Dict[str, Any]:
     system = (
         "Return ONLY JSON.\n"
@@ -345,7 +457,7 @@ async def _llm_repair_plan(
         "previous_plan": prev_plan,
         "candidates": schema_ctx,
         "join_hints": join_hints,
-        "relationships": relationships,
+        "relationships": rel_filtered,
     }
     prompt = [
         {"role": "system", "content": system},
@@ -384,16 +496,24 @@ async def text2sql_answer(query: str) -> Dict[str, Any]:
             "columns": cols,
         })
 
-    allowed_tables = set()
+    allowed_tables: Set[str] = set()
     for t in candidates[:8]:
         allowed_tables.add(t.table)
         allowed_tables.add(f"{t.db}.{t.table}")
 
     join_hints = _build_join_hints(candidates[:6])
+
+    # ✅ filter relationships to candidate tables only
+    rel_filtered = _filter_relationships(candidates, max_items=60)
+
     client = _ch_client()
 
     try:
-        plan = await _llm_generate_plan(query, schema_ctx, join_hints)
+        plan = await _llm_generate_plan(query, schema_ctx, join_hints, rel_filtered)
+
+        # ✅ deterministic: if wants name, enforce join/name selection
+        plan = _ensure_name_join_in_plan(plan, candidates, rel_filtered, query)
+
         sql, notes = _build_sql_from_plan(plan, allowed_tables, candidates, query)
 
         if not _is_safe_sql(sql):
@@ -411,7 +531,9 @@ async def text2sql_answer(query: str) -> Dict[str, Any]:
 
         # empty -> repair once
         if not rows:
-            plan2 = await _llm_repair_plan(query, schema_ctx, join_hints, "empty_result", plan)
+            plan2 = await _llm_repair_plan(query, schema_ctx, join_hints, rel_filtered, "empty_result", plan)
+            plan2 = _ensure_name_join_in_plan(plan2, candidates, rel_filtered, query)
+
             sql2, notes2 = _build_sql_from_plan(plan2, allowed_tables, candidates, query)
             if _is_safe_sql(sql2):
                 sql2 = _enforce_limit(sql2, max(10, min(CH_MAX_ROWS, 200)))
