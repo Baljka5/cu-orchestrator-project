@@ -168,67 +168,70 @@ def _inject_name_join(plan: Dict[str, Any],
     return plan
 
 
-def _force_dim_im_name_if_needed(plan: Dict[str, Any], query: str) -> Dict[str, Any]:
+def _force_product_name_join(plan: Dict[str, Any], query: str) -> Dict[str, Any]:
     """
-    Хэрэглэгч 'бүтээгдэхүүний нэр' асуусан бол:
-    - fact дээр GDS_CD байвал Dimension_IM join хийж GDS_NM харуулна.
-    - Top sold intent үед qty-г хамт харуулбал илүү зөв.
+    Хэрэглэгч 'бүтээгдэхүүний нэр' гэж асуусан бол:
+    - fact дээр GDS_CD байвал Dimension_IM join хийж GDS_NM (name) харуулна.
+    - 'хамгийн их зарагдсан' бол sum(SoldQty) тооцоолоод ORDER BY хийнэ.
     """
     ql = (query or "").lower()
-    wants_name = any(k in ql for k in ["нэр", "name", "барааны нэр", "бүтээгдэхүүний нэр", "product name", "item name"])
+
+    wants_name = any(k in ql for k in [
+        "нэр", "name", "барааны нэр", "бүтээгдэхүүний нэр", "product name", "item name"
+    ])
     if not wants_name:
         return plan
 
-    # plan байхгүй талбаруудыг хамгаалалттай бэлдэнэ
+    most_sold = any(k in ql for k in ["хамгийн их", "их зарагдсан", "most sold"])
+
     plan.setdefault("select", [])
     plan.setdefault("joins", [])
+    plan.setdefault("where", [])
     plan.setdefault("group_by", [])
     plan.setdefault("order_by", [])
-    plan.setdefault("where", [])
     plan.setdefault("limit", 50)
 
-    # fact table (DB.TABLE байж болно)
-    fact_full = (plan.get("fact_table") or "").strip()
-    fact_tbl = fact_full.split()[0] if fact_full else ""
-    fact_base = fact_tbl.split(".")[-1] if fact_tbl else ""
-
-    # fact alias үргэлж f гэж үзэж байгаа тул ON дээр f.GDS_CD ашиглана
     # Dimension_IM join байгаа эсэх
-    already_joined = any((j.get("table", "").split(".")[-1] == "Dimension_IM") for j in plan["joins"])
-    if not already_joined:
+    dim_join = None
+    for j in plan["joins"]:
+        if (j.get("table", "").split(".")[-1] == "Dimension_IM"):
+            dim_join = j
+            break
+
+    if not dim_join:
         alias = f"d{len(plan['joins']) + 1}"
-        plan["joins"].append({
+        dim_join = {
             "type": "LEFT",
             "table": f"{CLICKHOUSE_DATABASE}.Dimension_IM",
             "alias": alias,
             "on": f"f.GDS_CD = {alias}.GDS_CD"
-        })
-    else:
-        # existing Dimension_IM alias олъё
-        alias = next((j.get("alias") for j in plan["joins"] if j.get("table", "").split(".")[-1] == "Dimension_IM"),
-                     "d1")
+        }
+        plan["joins"].append(dim_join)
 
-    # SELECT дотор нэрийг заавал оруул
-    has_name = any(("GDS_NM" in (x.get("expr", ""))) or (x.get("as") == "item_name") for x in plan["select"])
+    alias = dim_join.get("alias") or "d1"
+
+    # SELECT дээр GDS_NM заавал байна
+    has_name = any(
+        isinstance(x, dict) and ("GDS_NM" in (x.get("expr") or "") or x.get("as") in ("item_name", "gds_nm"))
+        for x in plan["select"]
+    )
     if not has_name:
         plan["select"].insert(0, {"expr": f"{alias}.GDS_NM", "as": "item_name"})
 
-    # Top sold intent бол qty-г харуулах (мөн ORDER BY sum(SoldQty) байх ёстой)
-    most_sold = any(k in ql for k in ["хамгийн их", "их зарагдсан", "most sold"])
+    # "хамгийн их зарагдсан" бол зөв aggregate хийж top 1 гаргана
     if most_sold:
-        has_qty = any("SoldQty" in (x.get("expr", "")) for x in plan["select"])
+        has_qty = any(isinstance(x, dict) and "SoldQty" in (x.get("expr") or "") for x in plan["select"])
         if not has_qty:
             plan["select"].append({"expr": "sum(f.SoldQty)", "as": "total_qty"})
-        if not plan["order_by"]:
-            plan["order_by"] = ["total_qty DESC"]
-        if not plan["group_by"]:
-            plan["group_by"] = [f"{alias}.GDS_NM"]
-        else:
-            if f"{alias}.GDS_NM" not in plan["group_by"]:
-                plan["group_by"].insert(0, f"{alias}.GDS_NM")
 
-    # limit 1 хэвээр үлдээнэ (top 1)
-    if "limit" not in plan or not plan["limit"]:
+        # group by дээр нэр (мөн давхар GDS_CD хүсвэл нэмэж болно)
+        if f"{alias}.GDS_NM" not in plan["group_by"]:
+            plan["group_by"].insert(0, f"{alias}.GDS_NM")
+
+        # order by
+        plan["order_by"] = ["total_qty DESC"]
+
+        # top1
         plan["limit"] = 1
 
     return plan
@@ -314,7 +317,7 @@ Tips:
 
     # optional auto inject name join
     plan = _inject_name_join(plan, candidates, rel_filtered, query)
-    plan = _force_dim_im_name_if_needed(plan, query)
+    plan = _force_product_name_join(plan, query)
 
     # Build SQL from plan
     select_items = plan.get("select") or [{"expr": "count()", "as": "cnt"}]
