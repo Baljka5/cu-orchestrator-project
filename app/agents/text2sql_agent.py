@@ -307,11 +307,11 @@ async def text2sql_answer(query: str) -> Dict[str, Any]:
     # 1) hard rule (SQL mode)
     hard_total = _hard_rule_total_sales_sql_only(query)
     if hard_total:
-        return {"answer": hard_total, "meta": {"agent": "text2sql", "mode": "sql", "rule": "total_sales"}}
-
-    hard_prod = _hard_rule_sql_only(query)
-    if hard_prod:
-        return {"answer": hard_prod, "meta": {"agent": "text2sql", "mode": "sql", "rule": "top_sold_product_name"}}
+        data = _run_sql_preview(hard_total, max_rows=50)
+        meta = {"agent": "text2sql", "mode": "sql", "rule": "total_sales", "data": data}
+        if data.get("error"):
+            meta["error"] = data["error"]
+        return {"answer": hard_total, "meta": meta}
 
     hard_sql = _hard_rule_sql_only(query)
     if hard_sql:
@@ -319,7 +319,6 @@ async def text2sql_answer(query: str) -> Dict[str, Any]:
         meta = {"agent": "text2sql", "mode": "sql", "rule": "top_sold_product_name", "data": data}
         if data.get("error"):
             meta["error"] = data["error"]
-
         return {"answer": hard_sql, "meta": meta}
 
     # 2) normal flow: candidate schema + LLM plan -> build SQL
