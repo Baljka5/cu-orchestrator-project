@@ -32,7 +32,6 @@ def _canon(s: Optional[str]) -> str:
 
 
 class SchemaRegistry:
-
     def __init__(self, xlsx_path: str):
         self.xlsx_path = xlsx_path
         self.tables: List[TableInfo] = []
@@ -160,6 +159,18 @@ class SchemaRegistry:
             "metric_cols": metric_cols[:10],
             "key_cols": key_cols[:10],
             "name_cols": name_cols[:10],
+        }
+
+    # ✅ NEW: table card builder (LLM-д “table-ийг таниулах” үндсэн объект)
+    def to_table_card(self, t: TableInfo, max_cols: int = 80) -> Dict[str, Any]:
+        h = self.highlights(t)
+        return {
+            "db": t.db,
+            "table": t.table,
+            "entity": t.entity,
+            "description": t.description,
+            "highlights": h,
+            "columns": [{"name": c.name, "type": c.dtype, "attr": c.attr} for c in t.columns[:max_cols]],
         }
 
     def build_relationships(self) -> List[Dict[str, Any]]:
