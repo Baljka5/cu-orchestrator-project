@@ -33,6 +33,14 @@ def _ch_client():
         database=CLICKHOUSE_DATABASE,
     )
 
+
+def _wants_group_store(q: str) -> bool:
+    ql = (q or "").lower()
+    return any(k in ql for k in [
+        "дэлгүүрээр", "салбараар", "салбар тус бүр", "store by", "per store"
+    ])
+
+
 def _run_sql_preview(sql: str, max_rows: int = 50) -> Dict[str, Any]:
     """
     Run SQL and return a small preview for UI rendering.
@@ -45,6 +53,7 @@ def _run_sql_preview(sql: str, max_rows: int = 50) -> Dict[str, Any]:
         return {"columns": cols, "rows": rows}
     except Exception as e:
         return {"columns": [], "rows": [], "error": str(e)}
+
 
 # -------------------------------
 def _wants_name(q: str) -> bool:
@@ -255,9 +264,55 @@ LIMIT 1
 """.strip()
 
 
+def _hard_rule_total_sales_sql_only(query: str) -> str | None:
+    ql = (query or "").lower()
+
+    # year must exist
+    m_year = re.search(r"\b(20\d{2})\b", query or "")
+    year = int(m_year.group(1)) if m_year else None
+    if not year:
+        return None
+
+    # total sales intent
+    wants_total = any(k in ql for k in ["нийт", "total", "sum"])
+    wants_sales = any(k in ql for k in ["борлуулалт", "sales", "netsale", "grosssale", "орлого"])
+
+    if not (wants_total and wants_sales):
+        return None
+
+    # If user explicitly asks per store/branch, do group by store.
+    if _wants_group_store(query):
+        return f"""
+SELECT
+  f.StoreID AS store_id,
+  sum(f.NetSale) AS total_net_sales
+FROM {CLICKHOUSE_DATABASE}.Cluster_Main_Sales f
+WHERE toYear(f.SalesDate) = {year}
+GROUP BY f.StoreID
+ORDER BY total_net_sales DESC
+LIMIT 50
+""".strip()
+
+    # Otherwise: ONE NUMBER (no join, no group by)
+    return f"""
+SELECT
+  sum(f.NetSale) AS total_net_sales
+FROM {CLICKHOUSE_DATABASE}.Cluster_Main_Sales f
+WHERE toYear(f.SalesDate) = {year}
+""".strip()
+
+
 # -------------------------------
 async def text2sql_answer(query: str) -> Dict[str, Any]:
     # 1) hard rule (SQL mode)
+    hard_total = _hard_rule_total_sales_sql_only(query)
+    if hard_total:
+        return {"answer": hard_total, "meta": {"agent": "text2sql", "mode": "sql", "rule": "total_sales"}}
+
+    hard_prod = _hard_rule_sql_only(query)
+    if hard_prod:
+        return {"answer": hard_prod, "meta": {"agent": "text2sql", "mode": "sql", "rule": "top_sold_product_name"}}
+
     hard_sql = _hard_rule_sql_only(query)
     if hard_sql:
         data = _run_sql_preview(hard_sql, max_rows=50)
