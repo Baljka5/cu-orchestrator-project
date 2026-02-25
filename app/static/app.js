@@ -9,7 +9,7 @@ function renderTable(columns, rows) {
     if (!columns || columns.length === 0) return "";
     const head = columns.map(c => `<th>${esc(c)}</th>`).join("");
     const body = (rows || []).map(r =>
-        `<tr>${r.map(v => `<td>${esc(v)}</td>`).join("")}</tr>`
+        `<tr>${(r || []).map(v => `<td>${esc(v)}</td>`).join("")}</tr>`
     ).join("");
     return `
     <div class="tbl-wrap">
@@ -42,16 +42,22 @@ async function ask() {
         const answer = data.answer || "";
         const meta = data.meta || {};
 
-        const sql = meta.sql || "";
+        // ✅ SQL-г аль ч тохиолдолд барьж авна:
+        // - зарим агент meta.sql өгнө
+        // - text2sql одоо answer дээр SQL буцааж байгаа
+        const sql = (meta.sql || "").trim() || (answer || "").trim();
+
         const notes = meta.notes || "";
-        const table = meta.data ? renderTable(meta.data.columns, meta.data.rows) : "";
+
+        // ✅ Table data бол meta.data дээр ирнэ
+        const hasData = !!(meta.data && Array.isArray(meta.data.columns));
+        const table = hasData ? renderTable(meta.data.columns, meta.data.rows) : "";
+
+        // ✅ Error бол meta.error дээр харуулна
+        const err = meta.error || (meta.data && meta.data.error) || "";
 
         out.innerHTML = `
       <div class="card">
-        <div class="section">
-          <div class="label">Хариу</div>
-          <div class="answer">${esc(answer).replace(/\n/g, "<br>")}</div>
-        </div>
 
         ${notes ? `
           <div class="section">
@@ -63,19 +69,28 @@ async function ask() {
         ${sql ? `
           <div class="section">
             <div class="label-row">
-              <div class="label">SQL</div>
+              <div class="label">QUERY (SQL)</div>
               <button class="btn" id="copySql">Copy</button>
             </div>
             <pre class="code"><code>${esc(sql)}</code></pre>
-          </div>
-        ` : ""}
 
-        ${table ? `
-          <div class="section">
-            <div class="label">DATA</div>
-            ${table}
+            ${err ? `
+              <div class="err" style="margin-top:10px;">❌ Query error: ${esc(err)}</div>
+            ` : ""}
+
+            ${table ? `
+              <div style="margin-top:12px;">
+                <div class="label" style="margin-bottom:6px;">RESULT</div>
+                ${table}
+              </div>
+            ` : ""}
           </div>
-        ` : ""}
+        ` : `
+          <div class="section">
+            <div class="label">Хариу</div>
+            <div class="answer">${esc(answer).replace(/\n/g, "<br>")}</div>
+          </div>
+        `}
       </div>
     `;
 

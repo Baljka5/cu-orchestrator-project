@@ -33,6 +33,18 @@ def _ch_client():
         database=CLICKHOUSE_DATABASE,
     )
 
+def _run_sql_preview(sql: str, max_rows: int = 50) -> Dict[str, Any]:
+    """
+    Run SQL and return a small preview for UI rendering.
+    """
+    try:
+        client = _ch_client()
+        res = client.query(sql)
+        cols = res.column_names or []
+        rows = (res.result_rows or [])[:max_rows]
+        return {"columns": cols, "rows": rows}
+    except Exception as e:
+        return {"columns": [], "rows": [], "error": str(e)}
 
 # -------------------------------
 def _wants_name(q: str) -> bool:
@@ -248,10 +260,12 @@ async def text2sql_answer(query: str) -> Dict[str, Any]:
     # 1) hard rule (SQL mode)
     hard_sql = _hard_rule_sql_only(query)
     if hard_sql:
-        return {
-            "answer": hard_sql,
-            "meta": {"agent": "text2sql", "mode": "sql", "rule": "top_sold_product_name"}
-        }
+        data = _run_sql_preview(hard_sql, max_rows=50)
+        meta = {"agent": "text2sql", "mode": "sql", "rule": "top_sold_product_name", "data": data}
+        if data.get("error"):
+            meta["error"] = data["error"]
+
+        return {"answer": hard_sql, "meta": meta}
 
     # 2) normal flow: candidate schema + LLM plan -> build SQL
     candidates = _registry.search(query, top_k=12)
@@ -359,7 +373,9 @@ Return JSON schema:
     lim = max(1, min(lim, 500))
     sql += f"\nLIMIT {lim}"
 
-    return {
-        "answer": sql,
-        "meta": {"agent": "text2sql", "mode": "sql"}
-    }
+    data = _run_sql_preview(sql, max_rows=50)
+    meta = {"agent": "text2sql", "mode": "sql", "data": data}
+    if data.get("error"):
+        meta["error"] = data["error"]
+
+    return {"answer": sql, "meta": meta}

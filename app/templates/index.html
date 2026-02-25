@@ -1,40 +1,42 @@
 <!DOCTYPE html>
 <html lang="mn">
 <head>
-  <meta charset="UTF-8" />
-  <title>CU Orchestrator UI</title>
-  <link rel="stylesheet" href="/static/style.css" />
+    <meta charset="UTF-8"/>
+    <title>CU Orchestrator UI</title>
+    <link rel="stylesheet" href="/static/style.css"/>
 </head>
 <body>
 
 <div class="container">
-  <h2>🤖 CU Orchestrator</h2>
+    <h2>🤖 CU Orchestrator</h2>
 
-  <div class="row">
-    <div class="col">
-      <label>Agent сонгох</label>
-      <select id="agent">
-        <option value="auto">AUTO (Orchestrator)</option>
-        <option value="text2sql">Text2SQL</option>
-        <option value="policy">Policy</option>
-        <option value="research">Research</option>
-        <option value="general">General</option>
-      </select>
+    <div class="row">
+        <div class="col">
+            <label>Agent сонгох</label>
+            <select id="agent">
+                <option value="auto">AUTO (Orchestrator)</option>
+                <option value="text2sql">Text2SQL</option>
+                <option value="policy">Policy</option>
+                <option value="research">Research</option>
+                <option value="general">General</option>
+            </select>
+        </div>
     </div>
-  </div>
 
-  <div class="row">
-    <div class="col">
-      <label>Асуулт</label>
-      <textarea id="question" placeholder="Text"></textarea>
+    <div class="row">
+        <div class="col">
+            <label>Асуулт</label>
+            <textarea id="question" placeholder="Text"></textarea>
+        </div>
     </div>
-  </div>
 
-  <button class="btn-primary" onclick="ask()">Асуух</button>
+    <button class="btn-primary" onclick="ask()">Асуух</button>
 
-  <h3>Хариу</h3>
-  <!-- ✅ pre биш div -->
-  <div id="answer"></div>
+    <h3>Хариу</h3>
+    <div id="answer"></div>
+
+    <h3>Үр дүн</h3>
+    <div id="result"></div>
 </div>
 
 <script src="/static/app.js"></script>
