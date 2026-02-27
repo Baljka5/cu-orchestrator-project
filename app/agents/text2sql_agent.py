@@ -530,6 +530,52 @@ def _hard_rule_dataset_help_text(query: str) -> str | None:
         "Бүтээгдэхүүний нэр хэрэгтэй бол **BI_DB.Dimension_IM**-тэй GDS_CD дээр join хийж GDS_NM авна."
     )
 
+def _hard_rule_table_about_text(query: str) -> str | None:
+    q = (query or "").strip()
+    ql = q.lower()
+
+    asks_about = any(k in ql for k in [
+        "ямар дата", "ямар мэдээлэл", "юу байдаг", "ямар багана",
+        "тайлбар", "about", "what data", "what is in", "columns"
+    ])
+    if not asks_about:
+        return None
+
+    # table нэрийг асуултаас барьж авна (Dimension_IM гэх мэт)
+    m = re.search(r"\b([A-Za-z_][A-Za-z0-9_]*)\b", q)
+    if not m:
+        return None
+
+    tname = m.group(1)
+
+    # SchemaRegistry дээрээс тайлбар + багануудыг аваад текст болгоно
+    try:
+        hits = _registry.search(tname, top_k=3)
+        if not hits:
+            return None
+
+        # яг таарсан table-г эхэнд тавих
+        hits = sorted(hits, key=lambda x: 0 if x.table.lower() == tname.lower() else 1)
+
+        t = hits[0]
+        cols = [c.name for c in t.columns[:30]]
+        more = "" if len(t.columns) <= 30 else f" … (+{len(t.columns)-30} cols)"
+
+        highlights = _registry.highlights(t)
+
+        return (
+            f"**{t.db}.{t.table}** хүснэгт:\n"
+            f"- Entity: {t.entity or '-'}\n"
+            f"- Description: {t.description or '-'}\n"
+            f"- Гол баганууд: {', '.join(cols)}{more}\n"
+            f"- Date төрлийн магадлалтай: {', '.join(highlights.get('date_cols', [])) or '-'}\n"
+            f"- Key/ID: {', '.join(highlights.get('key_cols', [])) or '-'}\n"
+            f"- Metric: {', '.join(highlights.get('metric_cols', [])) or '-'}\n"
+            f"- Name багана: {', '.join(highlights.get('name_cols', [])) or '-'}\n"
+        )
+    except Exception:
+        return None
+
 
 # -------------------------------
 def _sql_response(sql: str, rule: str) -> Dict[str, Any]:
@@ -543,6 +589,10 @@ def _sql_response(sql: str, rule: str) -> Dict[str, Any]:
 # -------------------------------
 async def text2sql_answer(query: str) -> Dict[str, Any]:
     # 1) Hard rules first (always include preview data for UI)
+
+    about_txt = _hard_rule_table_about_text(query)
+    if about_txt:
+        return {"answer": about_txt, "meta": {"agent": "text2sql", "mode": "text", "rule": "table_about"}}
 
     txt = _hard_rule_dataset_help_text(query)
     if txt:
