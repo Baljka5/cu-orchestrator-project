@@ -483,6 +483,34 @@ LIMIT 10
 """.strip()
 
 
+def _hard_rule_yoy_growth_sql(query: str) -> str | None:
+    ql = (query or "").lower()
+    wants_compare = any(k in ql for k in ["харьцуулах", "vs", "өнгөрсөн", "өссөн", "өсөлт", "how much increase"])
+    wants_percent = any(k in ql for k in ["хувь", "%", "percent"])
+    wants_sales = any(k in ql for k in ["борлуулалт", "орлого", "netsale", "sales"])
+
+    # must contain 2 years
+    years = re.findall(r"\b(20\d{2})\b", query or "")
+    years = sorted({int(y) for y in years})
+    if len(years) < 2:
+        return None
+
+    y1, y2 = years[0], years[1]  # older, newer
+    if not (wants_compare and wants_percent and wants_sales):
+        return None
+
+    return f"""
+SELECT
+  sumIf(f.NetSale, toYear(f.SalesDate) = {y2}) AS net_{y2},
+  sumIf(f.NetSale, toYear(f.SalesDate) = {y1}) AS net_{y1},
+  if(net_{y1} = 0, NULL,
+     round((net_{y2} - net_{y1}) / net_{y1} * 100, 2)
+  ) AS growth_pct
+FROM {CLICKHOUSE_DATABASE}.Cluster_Main_Sales f
+WHERE toYear(f.SalesDate) IN ({y1}, {y2})
+""".strip()
+
+
 # -------------------------------
 def _sql_response(sql: str, rule: str) -> Dict[str, Any]:
     data = _run_sql_preview(sql, max_rows=50)
@@ -495,6 +523,11 @@ def _sql_response(sql: str, rule: str) -> Dict[str, Any]:
 # -------------------------------
 async def text2sql_answer(query: str) -> Dict[str, Any]:
     # 1) Hard rules first (always include preview data for UI)
+
+    sql = _hard_rule_yoy_growth_sql(query)
+    if sql:
+        return _sql_response(sql, "yoy_sales_growth_pct")
+
     sql = _hard_rule_top_sold_product_name_sql(query)
     if sql:
         return _sql_response(sql, "top_sold_product_name")
