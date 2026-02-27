@@ -322,11 +322,11 @@ async def text2sql_answer(query: str) -> Dict[str, Any]:
         return {"answer": hard_sql, "meta": meta}
 
     # 2) normal flow: candidate schema + LLM plan -> build SQL
-    candidates = _registry.search(query, top_k=12)
+    candidates = _registry.search(query, top_k=6)
     if not candidates:
         return {"answer": "Schema олдсонгүй.", "meta": {"agent": "text2sql", "mode": "sql"}}
 
-    table_cards = [_registry.to_table_card(t, max_cols=80) for t in candidates[:8]]
+    table_cards = [_registry.to_table_card(t, max_cols=25) for t in candidates[:4]]
 
     allowed_tables: Set[str] = set()
     for t in candidates:
@@ -335,7 +335,8 @@ async def text2sql_answer(query: str) -> Dict[str, Any]:
     allowed_tables.add("Dimension_IM")
     allowed_tables.add(f"{CLICKHOUSE_DATABASE}.Dimension_IM")
 
-    rel_filtered = _filter_relationships(candidates)
+    rel_filtered = _filter_relationships(candidates)[:20]
+    allowed_tables = sorted(list(allowed_tables))[:40]
 
     system = """
 You are a ClickHouse Text-to-SQL planner.
