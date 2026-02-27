@@ -511,6 +511,26 @@ WHERE toYear(f.SalesDate) IN ({y1}, {y2})
 """.strip()
 
 
+def _hard_rule_dataset_help_text(query: str) -> str | None:
+    ql = (query or "").lower()
+
+    asks_where = any(k in ql for k in [
+        "хаана", "ямар table", "аль table", "ямар хүснэгт", "аль хүснэгт",
+        "where", "which table", "table name"
+    ])
+    asks_sales = any(k in ql for k in ["sales", "борлуул", "орлого", "netsale", "grosssale", "soldqty"])
+
+    if not (asks_where and asks_sales):
+        return None
+
+    return (
+        "Sales-ийн үндсэн detail дата **BI_DB.Cluster_Main_Sales** хүснэгт дээр байна.\n"
+        "Түгээмэл хэмжигдэхүүнүүд: NetSale, GrossSale, SoldQty, Discount, Tax_VAT.\n"
+        "Огноо: SalesDate, Дэлгүүр: StoreID, Бараа: GDS_CD.\n"
+        "Бүтээгдэхүүний нэр хэрэгтэй бол **BI_DB.Dimension_IM**-тэй GDS_CD дээр join хийж GDS_NM авна."
+    )
+
+
 # -------------------------------
 def _sql_response(sql: str, rule: str) -> Dict[str, Any]:
     data = _run_sql_preview(sql, max_rows=50)
@@ -523,6 +543,10 @@ def _sql_response(sql: str, rule: str) -> Dict[str, Any]:
 # -------------------------------
 async def text2sql_answer(query: str) -> Dict[str, Any]:
     # 1) Hard rules first (always include preview data for UI)
+
+    txt = _hard_rule_dataset_help_text(query)
+    if txt:
+        return {"answer": txt, "meta": {"agent": "text2sql", "mode": "text", "rule": "sales_dataset_help"}}
 
     sql = _hard_rule_yoy_growth_sql(query)
     if sql:
