@@ -28,6 +28,15 @@ CLICKHOUSE_USER = env("CLICKHOUSE_USER", "default")
 CLICKHOUSE_PASSWORD = env("CLICKHOUSE_PASSWORD", "")
 CLICKHOUSE_DATABASE = env("CLICKHOUSE_DATABASE", "")
 
+
+MYSQL_HOST = os.getenv("MYSQL_HOST", "127.0.0.1")
+MYSQL_PORT = int(os.getenv("MYSQL_PORT", "3306"))
+MYSQL_USER = os.getenv("MYSQL_USER", "root")
+MYSQL_PASSWORD = os.getenv("MYSQL_PASSWORD", "")
+MYSQL_DATABASE = os.getenv("MYSQL_DATABASE", "llm_db")
+MYSQL_POOL_NAME = os.getenv("MYSQL_POOL_NAME", "llm_pool")
+MYSQL_POOL_SIZE = int(os.getenv("MYSQL_POOL_SIZE", "10"))
+
 CH_MAX_ROWS = int(env("CH_MAX_ROWS", "200"))
 
 CH_DEFAULT_TABLE = env("CH_DEFAULT_TABLE", "Cluster_Main_Sales")

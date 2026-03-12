@@ -8,6 +8,8 @@ class ChatRequest(BaseModel):
     message: str
     force_agent: Optional[str] = None
 
+    session_id: Optional[str] = None
+
 
 class ChatResponse(BaseModel):
     answer: str
@@ -29,3 +31,6 @@ class OrchestratorState(BaseModel):
 
     final_answer: Optional[str] = None
     meta: Dict[str, Any] = Field(default_factory=dict)
+
+    # session tracking
+    session_id: Optional[str] = None
