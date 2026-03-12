@@ -13,19 +13,29 @@ def text_response(text: str, rule: str) -> Dict[str, Any]:
     }
 
 
-def sql_response(sql: str, rule: str, runner: Callable[..., Dict[str, Any]]) -> Dict[str, Any]:
+def sql_response(sql: str, rule: str, runner):
     data = runner(sql, max_rows=50)
+
+    human_answer = "SQL query амжилттай үүслээ."
+    if data.get("error"):
+        human_answer = f"Query ажиллуулахад алдаа гарлаа: {data['error']}"
+    elif data.get("rows"):
+        human_answer = f"{rule} асуултад зориулсан query үүслээ. {len(data['rows'])} мөр preview байна."
+    else:
+        human_answer = "SQL query үүслээ, гэхдээ preview result хоосон байна."
+
     meta = {
         "agent": "text2sql",
         "mode": "sql",
         "rule": rule,
+        "sql": sql,
         "data": data,
     }
     if data.get("error"):
         meta["error"] = data["error"]
 
     return {
-        "answer": sql,
+        "answer": human_answer,
         "meta": meta,
     }
 

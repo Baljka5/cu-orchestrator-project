@@ -30,6 +30,104 @@ def hard_rule_dataset_help_text(query: str) -> Optional[str]:
     )
 
 
+def hard_rule_same_year_quarter_compare_sql(query: str) -> Optional[str]:
+    ql = (query or "").lower()
+    year = extract_year(query)
+    if not year:
+        return None
+
+    if not any(k in ql for k in ["харьцуул", "compare", "vs", "ялгаа"]):
+        return None
+
+    quarters = re.findall(r"\bq([1-4])\b", ql)
+    if len(quarters) < 2:
+        m = re.findall(r"([1-4])\s*[-]?\s*р\s*улирал", ql)
+        quarters = m
+
+    if len(quarters) < 2:
+        return None
+
+    q1 = int(quarters[0])
+    q2 = int(quarters[1])
+
+    if q1 == q2:
+        return None
+
+    q1_start = (q1 - 1) * 3 + 1
+    q1_end = q1_start + 2
+    q2_start = (q2 - 1) * 3 + 1
+    q2_end = q2_start + 2
+
+    return f"""
+SELECT
+  sumIf(f.NetSale, toYear(f.SalesDate) = {year} AND toMonth(f.SalesDate) BETWEEN {q1_start} AND {q1_end}) AS q{q1}_sales,
+  sumIf(f.NetSale, toYear(f.SalesDate) = {year} AND toMonth(f.SalesDate) BETWEEN {q2_start} AND {q2_end}) AS q{q2}_sales,
+  (q{q2}_sales - q{q1}_sales) AS diff_amount,
+  if(q{q1}_sales = 0, NULL,
+     round((q{q2}_sales - q{q1}_sales) / q{q1}_sales * 100, 2)
+  ) AS diff_pct
+FROM {sales_fact()} f
+""".strip()
+
+
+def hard_rule_cross_year_quarter_compare_sql(query: str) -> Optional[str]:
+    ql = (query or "").lower()
+    if not any(k in ql for k in ["харьцуул", "compare", "vs", "ялгаа"]):
+        return None
+
+    pairs = re.findall(r"(20\d{2}).*?q([1-4])", ql)
+    if len(pairs) < 2:
+        return None
+
+    (y1, q1), (y2, q2) = pairs[0], pairs[1]
+    y1, q1, y2, q2 = int(y1), int(q1), int(y2), int(q2)
+
+    q1_start = (q1 - 1) * 3 + 1
+    q1_end = q1_start + 2
+    q2_start = (q2 - 1) * 3 + 1
+    q2_end = q2_start + 2
+
+    return f"""
+SELECT
+  sumIf(f.NetSale, toYear(f.SalesDate) = {y1} AND toMonth(f.SalesDate) BETWEEN {q1_start} AND {q1_end}) AS y{y1}_q{q1}_sales,
+  sumIf(f.NetSale, toYear(f.SalesDate) = {y2} AND toMonth(f.SalesDate) BETWEEN {q2_start} AND {q2_end}) AS y{y2}_q{q2}_sales,
+  (y{y2}_q{q2}_sales - y{y1}_q{q1}_sales) AS diff_amount,
+  if(y{y1}_q{q1}_sales = 0, NULL,
+     round((y{y2}_q{q2}_sales - y{y1}_q{q1}_sales) / y{y1}_q{q1}_sales * 100, 2)
+  ) AS diff_pct
+FROM {sales_fact()} f
+""".strip()
+
+def hard_rule_monthly_compare_two_years_sql(query: str) -> Optional[str]:
+    ql = (query or "").lower()
+    years = extract_years(query)
+    if len(years) < 2:
+        return None
+
+    if not any(k in ql for k in ["сар", "monthly", "month"]):
+        return None
+    if not any(k in ql for k in ["харьцуул", "compare", "vs"]):
+        return None
+
+    y1, y2 = years[0], years[1]
+
+    return f"""
+SELECT
+  toMonth(f.SalesDate) AS month_no,
+  sumIf(f.NetSale, toYear(f.SalesDate) = {y1}) AS sales_{y1},
+  sumIf(f.NetSale, toYear(f.SalesDate) = {y2}) AS sales_{y2},
+  (sales_{y2} - sales_{y1}) AS diff_amount,
+  if(sales_{y1} = 0, NULL,
+     round((sales_{y2} - sales_{y1}) / sales_{y1} * 100, 2)
+  ) AS diff_pct
+FROM {sales_fact()} f
+WHERE toYear(f.SalesDate) IN ({y1}, {y2})
+GROUP BY month_no
+ORDER BY month_no
+""".strip()
+
+
+
 def hard_rule_table_about_text(query: str, registry: Any) -> Optional[str]:
     q = (query or "").strip()
     ql = q.lower()
@@ -131,6 +229,62 @@ FROM {sales_fact()} f
 WHERE toYear(f.SalesDate) = {year}
 """.strip()
 
+def hard_rule_top_growth_store_yoy_sql(query: str) -> Optional[str]:
+    ql = (query or "").lower()
+    years = extract_years(query)
+    if len(years) < 2:
+        return None
+
+    if not any(k in ql for k in ["салбар", "дэлгүүр", "store"]):
+        return None
+    if not any(k in ql for k in ["хамгийн их өссөн", "most increased", "most growth", "их өссөн"]):
+        return None
+    if not Intent.is_sales(query):
+        return None
+
+    y1, y2 = years[0], years[1]
+
+    return f"""
+SELECT
+  f.StoreID AS store_id,
+  sumIf(f.NetSale, toYear(f.SalesDate) = {y1}) AS sales_{y1},
+  sumIf(f.NetSale, toYear(f.SalesDate) = {y2}) AS sales_{y2},
+  (sales_{y2} - sales_{y1}) AS growth_amount,
+  if(sales_{y1} = 0, NULL,
+     round((sales_{y2} - sales_{y1}) / sales_{y1} * 100, 2)
+  ) AS growth_pct
+FROM {sales_fact()} f
+WHERE toYear(f.SalesDate) IN ({y1}, {y2})
+GROUP BY f.StoreID
+ORDER BY growth_amount DESC
+LIMIT 1
+""".strip()
+
+def hard_rule_same_quarter_two_years_sql(query: str) -> Optional[str]:
+    ql = (query or "").lower()
+    years = extract_years(query)
+    quarter = extract_quarter(query)
+
+    if len(years) < 2 or not quarter:
+        return None
+
+    if not any(k in ql for k in ["харьцуул", "compare", "vs", "ялгаа"]):
+        return None
+
+    y1, y2 = years[0], years[1]
+    start_month = (quarter - 1) * 3 + 1
+    end_month = start_month + 2
+
+    return f"""
+SELECT
+  sumIf(f.NetSale, toYear(f.SalesDate) = {y1} AND toMonth(f.SalesDate) BETWEEN {start_month} AND {end_month}) AS y{y1}_q{quarter}_sales,
+  sumIf(f.NetSale, toYear(f.SalesDate) = {y2} AND toMonth(f.SalesDate) BETWEEN {start_month} AND {end_month}) AS y{y2}_q{quarter}_sales,
+  (y{y2}_q{quarter}_sales - y{y1}_q{quarter}_sales) AS diff_amount,
+  if(y{y1}_q{quarter}_sales = 0, NULL,
+     round((y{y2}_q{quarter}_sales - y{y1}_q{quarter}_sales) / y{y1}_q{quarter}_sales * 100, 2)
+  ) AS diff_pct
+FROM {sales_fact()} f
+""".strip()
 
 def hard_rule_monthly_sales_sql(query: str) -> Optional[str]:
     year = extract_year(query)
@@ -251,8 +405,13 @@ WHERE toYear(f.SalesDate) = {year}
 """.strip()
 
 
-HARD_SQL_RULES: List[Tuple[str, Callable[[str], Optional[str]]]] = [
+HARD_SQL_RULES = [
     ("yoy_sales_growth_pct", hard_rule_yoy_growth_sql),
+    ("same_year_quarter_compare", hard_rule_same_year_quarter_compare_sql),
+    ("cross_year_quarter_compare", hard_rule_cross_year_quarter_compare_sql),
+    ("same_quarter_two_years_compare", hard_rule_same_quarter_two_years_sql),
+    ("monthly_compare_two_years", hard_rule_monthly_compare_two_years_sql),
+    ("top_growth_store_yoy", hard_rule_top_growth_store_yoy_sql),
     ("top_sold_product_name", hard_rule_top_sold_product_name_sql),
     ("total_qty", hard_rule_total_qty_sql),
     ("monthly_sales_trend", hard_rule_monthly_sales_sql),
