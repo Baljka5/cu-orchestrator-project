@@ -1,4 +1,3 @@
-# app/agents/text2sql/postprocess.py
 from typing import Any, Dict, List
 
 from app.agents.text2sql.intents import Intent
@@ -38,7 +37,6 @@ def repair_canonical_columns(plan: Dict[str, Any]) -> Dict[str, Any]:
     plan["where"] = [_replace_expr(x) for x in plan["where"] if isinstance(x, str)]
     plan["group_by"] = [_replace_expr(x) for x in plan["group_by"] if isinstance(x, str)]
     plan["order_by"] = [_replace_expr(x) for x in plan["order_by"] if isinstance(x, str)]
-
     return plan
 
 
@@ -49,10 +47,6 @@ def force_fact_sales_table(plan: Dict[str, Any], query: str) -> Dict[str, Any]:
 
 
 def drop_suspicious_joins(plan: Dict[str, Any], query: str) -> Dict[str, Any]:
-    """
-    Sales/store/product summary query үед unnecessary join-уудыг хасна.
-    """
-    ql = (query or "").lower()
     safe_joins = []
 
     for j in plan.get("joins", []):
@@ -61,7 +55,6 @@ def drop_suspicious_joins(plan: Dict[str, Any], query: str) -> Dict[str, Any]:
 
         table_name = (j.get("table") or "").split(".")[-1]
 
-        # product name асуугаагүй үед Dimension_IM-с бусад join хэрэггүй
         if table_name == "Dimension_IM":
             safe_joins.append(j)
             continue
@@ -108,10 +101,7 @@ def ensure_product_name_join(plan: Dict[str, Any], query: str) -> Dict[str, Any]
 
     has_name = any(
         isinstance(x, dict)
-        and (
-            "GDS_NM" in (x.get("expr") or "")
-            or x.get("as") in ("product_name", "item_name")
-        )
+        and ("GDS_NM" in (x.get("expr") or "") or x.get("as") in ("product_name", "item_name"))
         for x in plan["select"]
     )
     if not has_name:

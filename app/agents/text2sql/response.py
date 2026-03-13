@@ -1,4 +1,3 @@
-# app/agents/text2sql/response.py
 from typing import Any, Callable, Dict
 
 
@@ -16,23 +15,29 @@ def text_response(text: str, rule: str) -> Dict[str, Any]:
 def sql_response(sql: str, rule: str, runner: Callable[..., Dict[str, Any]]) -> Dict[str, Any]:
     data = runner(sql, max_rows=20)
 
+    preview_rows = len(data.get("rows") or [])
+    preview_cols = data.get("columns") or []
+    first_row = data.get("rows", [None])[0] if data.get("rows") else None
+
+    meta = {
+        "agent": "text2sql",
+        "mode": "sql",
+        "rule": rule,
+        "sql": sql,
+        "data": data,
+        "preview": {
+            "row_count": preview_rows,
+            "columns": preview_cols,
+            "first_row": first_row,
+        },
+    }
+
     if data.get("error"):
-        answer = f"Query ажиллуулахад алдаа гарлаа: {data['error']}"
-    elif data.get("rows"):
-        answer = f"'{rule}' асуултад зориулсан SQL үүслээ."
-    else:
-        answer = "SQL үүслээ, гэхдээ preview result хоосон байна."
+        meta["error"] = data["error"]
 
     return {
-        "answer": answer,
-        "meta": {
-            "agent": "text2sql",
-            "mode": "sql",
-            "rule": rule,
-            "sql": sql,
-            "data": data,
-            **({"error": data["error"]} if data.get("error") else {}),
-        },
+        "answer": sql,
+        "meta": meta,
     }
 
 
@@ -41,7 +46,7 @@ def error_response(message: str, code: str) -> Dict[str, Any]:
         "answer": message,
         "meta": {
             "agent": "text2sql",
-            "mode": "sql",
+            "mode": "error",
             "error": code,
         },
     }

@@ -1,6 +1,4 @@
-# app/agents/text2sql/executor.py
 from typing import Any, Dict
-
 import clickhouse_connect
 
 from app.config import (

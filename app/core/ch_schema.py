@@ -1,58 +1,195 @@
-import os
-import httpx
+from typing import Any, Dict, List
+import clickhouse_connect
 
-CH_HOST = os.getenv("CH_HOST", "")
-CH_PORT = int(os.getenv("CH_PORT", "8123"))
-CH_USER = os.getenv("CH_USER", "default")
-CH_PASSWORD = os.getenv("CH_PASSWORD", "")
-CH_DATABASE = os.getenv("CH_DATABASE", "")
+from app.config import (
+    CLICKHOUSE_HOST,
+    CLICKHOUSE_PORT,
+    CLICKHOUSE_USER,
+    CLICKHOUSE_PASSWORD,
+)
 
-SCHEMA_MAX_TABLES = int(os.getenv("SCHEMA_MAX_TABLES", "40"))
-SCHEMA_MAX_COLS_PER_TABLE = int(os.getenv("SCHEMA_MAX_COLS_PER_TABLE", "40"))
 
-def _ch_url() -> str:
-    return f"http://{CH_HOST}:{CH_PORT}"
+SYSTEM_DATABASES = {"system", "information_schema", "INFORMATION_SCHEMA"}
 
-def _auth():
-    if CH_USER:
-        return (CH_USER, CH_PASSWORD)
-    return None
 
-async def fetch_schema_markdown() -> str:
-    if not CH_HOST or not CH_DATABASE:
-        return "ClickHouse schema not configured."
+def ch_client():
+    return clickhouse_connect.get_client(
+        host=CLICKHOUSE_HOST,
+        port=CLICKHOUSE_PORT,
+        username=CLICKHOUSE_USER,
+        password=CLICKHOUSE_PASSWORD,
+    )
 
-    sql_tables = f"""
-    SELECT name
-    FROM system.tables
-    WHERE database = '{CH_DATABASE}'
-      AND engine NOT IN ('View','MaterializedView')
-    ORDER BY name
-    LIMIT {SCHEMA_MAX_TABLES}
-    FORMAT TabSeparated
-    """
 
-    async with httpx.AsyncClient(timeout=20.0) as client:
-        r = await client.post(_ch_url(), content=sql_tables, auth=_auth())
-        r.raise_for_status()
-        tables = [t.strip() for t in r.text.splitlines() if t.strip()]
+def list_tables(databases: List[str] | None = None) -> List[Dict[str, Any]]:
+    client = ch_client()
 
-        parts = [f"# ClickHouse schema ({CH_DATABASE})", ""]
-        for t in tables:
-            sql_cols = f"""
-            SELECT name, type
-            FROM system.columns
-            WHERE database = '{CH_DATABASE}' AND table = '{t}'
-            ORDER BY position
-            LIMIT {SCHEMA_MAX_COLS_PER_TABLE}
-            FORMAT TabSeparated
-            """
-            rc = await client.post(_ch_url(), content=sql_cols, auth=_auth())
-            rc.raise_for_status()
-            rows = [x.split("\t") for x in rc.text.splitlines() if x.strip()]
-            parts.append(f"## {t}")
-            for name, typ in rows:
-                parts.append(f"- {name}: {typ}")
-            parts.append("")
+    if databases:
+        db_list = ", ".join([f"'{db}'" for db in databases])
+        sql = f"""
+        SELECT
+            database,
+            name AS table_name,
+            engine,
+            comment
+        FROM system.tables
+        WHERE database IN ({db_list})
+        ORDER BY database, table_name
+        """
+    else:
+        sql = """
+        SELECT
+            database,
+            name AS table_name,
+            engine,
+            comment
+        FROM system.tables
+        WHERE database NOT IN ('system', 'information_schema', 'INFORMATION_SCHEMA')
+        ORDER BY database, table_name
+        """
 
-        return "\n".join(parts)
+    result = client.query(sql)
+    rows = []
+    for row in result.result_rows:
+        rows.append(
+            {
+                "database": row[0],
+                "table": row[1],
+                "engine": row[2],
+                "comment": row[3],
+            }
+        )
+    return rows
+
+
+def list_columns(databases: List[str] | None = None) -> List[Dict[str, Any]]:
+    client = ch_client()
+
+    if databases:
+        db_list = ", ".join([f"'{db}'" for db in databases])
+        sql = f"""
+        SELECT
+            database,
+            table,
+            name AS column_name,
+            type,
+            default_kind,
+            default_expression,
+            comment
+        FROM system.columns
+        WHERE database IN ({db_list})
+        ORDER BY database, table, position
+        """
+    else:
+        sql = """
+        SELECT
+            database,
+            table,
+            name AS column_name,
+            type,
+            default_kind,
+            default_expression,
+            comment
+        FROM system.columns
+        WHERE database NOT IN ('system', 'information_schema', 'INFORMATION_SCHEMA')
+        ORDER BY database, table, position
+        """
+
+    result = client.query(sql)
+    rows = []
+    for row in result.result_rows:
+        rows.append(
+            {
+                "database": row[0],
+                "table": row[1],
+                "name": row[2],
+                "type": row[3],
+                "default_kind": row[4],
+                "default_expression": row[5],
+                "comment": row[6],
+            }
+        )
+    return rows
+
+
+def infer_column_semantics(column_name: str, column_type: str) -> List[str]:
+    n = (column_name or "").lower()
+    t = (column_type or "").lower()
+
+    tags: List[str] = []
+
+    if any(x in n for x in ["date", "dt", "time", "created_at", "updated_at", "salesdate"]):
+        tags.append("date")
+
+    if any(x in n for x in ["name", "nm", "desc"]):
+        tags.append("name")
+
+    if any(x in n for x in ["id", "code", "cd", "no"]):
+        tags.append("key")
+
+    if any(x in n for x in ["sale", "amount", "amt", "price", "cost", "tax", "discount"]):
+        tags.append("metric")
+
+    if any(x in n for x in ["qty", "cnt", "count", "quantity"]):
+        tags.append("quantity")
+
+    if "date" in t or "datetime" in t:
+        if "date" not in tags:
+            tags.append("date")
+
+    return tags
+
+
+def infer_table_entity(table_name: str) -> str:
+    t = (table_name or "").lower()
+
+    if "sales" in t:
+        return "sales_fact"
+    if "dimension" in t and ("im" in t or "product" in t or "item" in t):
+        return "product_dimension"
+    if "dimension" in t and ("store" in t or "lem" in t or "leg" in t):
+        return "store_dimension"
+    if "stock" in t or "inventory" in t:
+        return "inventory_fact"
+    if "promo" in t or "campaign" in t:
+        return "promotion_fact"
+    return "table"
+
+
+def build_schema_catalog(databases: List[str] | None = None) -> Dict[str, Any]:
+    tables = list_tables(databases=databases)
+    columns = list_columns(databases=databases)
+
+    grouped_cols: Dict[str, List[Dict[str, Any]]] = {}
+    for col in columns:
+        key = f"{col['database']}.{col['table']}"
+        grouped_cols.setdefault(key, []).append(col)
+
+    catalog_tables = []
+    for tbl in tables:
+        key = f"{tbl['database']}.{tbl['table']}"
+        cols = grouped_cols.get(key, [])
+
+        catalog_tables.append(
+            {
+                "db": tbl["database"],
+                "table": tbl["table"],
+                "entity": infer_table_entity(tbl["table"]),
+                "description": tbl.get("comment") or "",
+                "engine": tbl.get("engine") or "",
+                "columns": [
+                    {
+                        "name": c["name"],
+                        "type": c["type"],
+                        "description": c.get("comment") or "",
+                        "semantic": infer_column_semantics(c["name"], c["type"]),
+                    }
+                    for c in cols
+                ],
+            }
+        )
+
+    return {
+        "tables": catalog_tables,
+        "relationships": [],
+    }

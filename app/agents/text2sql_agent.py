@@ -1,10 +1,10 @@
-# app/agents/text2sql.py
 from typing import Any, Dict, Optional
 
 from app.agents.text2sql.executor import run_sql_preview
 from app.agents.text2sql.hard_rules import (
     hard_rule_dataset_help_text,
     hard_rule_table_about_text,
+    hard_rule_sales_related_tables_text,
     HARD_SQL_RULES,
 )
 from app.agents.planner import plan_with_llm
@@ -23,6 +23,7 @@ from app.agents.text2sql.registry_utils import (
 from app.agents.text2sql.sql_builder import build_sql_from_plan
 from app.agents.text2sql.response import text_response, sql_response, error_response
 from app.agents.text2sql.history import persist_result
+from app.agents.text2sql.intents import normalize_query
 from app.config import CLICKHOUSE_DATABASE
 
 
@@ -32,6 +33,12 @@ async def text2sql_answer(query: str, session_id: Optional[str] = None) -> Dict[
     about_txt = hard_rule_table_about_text(query, registry)
     if about_txt:
         result = text_response(about_txt, "table_about")
+        persist_result(query=query, result=result, session_id=session_id)
+        return result
+
+    sales_tables_txt = hard_rule_sales_related_tables_text(query, registry)
+    if sales_tables_txt:
+        result = text_response(sales_tables_txt, "sales_related_tables")
         persist_result(query=query, result=result, session_id=session_id)
         return result
 
@@ -48,7 +55,9 @@ async def text2sql_answer(query: str, session_id: Optional[str] = None) -> Dict[
             persist_result(query=query, result=result, session_id=session_id)
             return result
 
-    candidates = registry.search(query, top_k=8)
+    normalized_query = normalize_query(query)
+    candidates = registry.search(normalized_query, top_k=12) or registry.search(query, top_k=12)
+
     if not candidates:
         result = error_response("Schema олдсонгүй.", "schema_not_found")
         persist_result(query=query, result=result, session_id=session_id)
@@ -78,27 +87,13 @@ async def text2sql_answer(query: str, session_id: Optional[str] = None) -> Dict[
 
     fallback_fact = f"{candidates[0].db}.{candidates[0].table}"
     built = build_sql_from_plan(plan, allowed_tables, fallback_fact, CLICKHOUSE_DATABASE)
+
     if built.get("error"):
         result = error_response(built["error"], built["error"])
         persist_result(query=query, result=result, session_id=session_id)
         return result
 
     sql = built["sql"]
-    data = run_sql_preview(sql, max_rows=50)
-
-    meta = {
-        "agent": "text2sql",
-        "mode": "sql",
-        "rule": "llm_plan",
-        "data": data,
-        "plan": plan,
-    }
-    if data.get("error"):
-        meta["error"] = data["error"]
-
-    result = {
-        "answer": sql,
-        "meta": meta,
-    }
+    result = sql_response(sql, "llm_plan", run_sql_preview)
     persist_result(query=query, result=result, session_id=session_id)
     return result

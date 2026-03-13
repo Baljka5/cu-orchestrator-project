@@ -1,29 +1,34 @@
-# app/agents/text2sql/intents.py
 import re
 from typing import List, Optional
 
-
 MIXED_WORD_MAP = {
-    "onii": "оны",
     "onii": "оны",
     "jiliin": "жилийн",
     "jil": "жил",
     "niit": "нийт",
     "niiit": "нийт",
+    "dun": "дүн",
     "borluulalt": "борлуулалт",
     "borluulaltiin": "борлуулалтын",
+    "borluulalttai": "борлуулалттай",
     "orlogo": "орлого",
     "salbar": "салбар",
+    "salbaraar": "салбараар",
     "delguur": "дэлгүүр",
+    "delguureer": "дэлгүүрээр",
     "store": "store",
     "baraa": "бараа",
+    "baraanii": "барааны",
     "buteegdehuun": "бүтээгдэхүүн",
+    "buteegdehuunii": "бүтээгдэхүүний",
     "product": "product",
     "item": "item",
     "sar": "сар",
     "sariin": "сарын",
     "monthly": "monthly",
+    "month": "month",
     "uliral": "улирал",
+    "quarter": "quarter",
     "q1": "q1",
     "q2": "q2",
     "q3": "q3",
@@ -39,6 +44,7 @@ MIXED_WORD_MAP = {
     "vs": "vs",
     "huvi": "хувь",
     "huv": "хувь",
+    "percent": "percent",
     "growth": "өсөлт",
     "osolt": "өсөлт",
     "zarsan": "зарагдсан",
@@ -46,21 +52,21 @@ MIXED_WORD_MAP = {
     "shirheg": "ширхэг",
     "too": "тоо",
     "quantity": "quantity",
+    "qty": "quantity",
     "soldqty": "soldqty",
     "ner": "нэр",
     "name": "name",
     "yu": "юу",
     "ali": "аль",
+    "hed": "хэд",
+    "hezee": "хэзээ",
 }
 
 
 def normalize_query(query: str) -> str:
     text = (query or "").strip().lower()
-
-    # punctuation normalize
     text = re.sub(r"[^\w\s%]+", " ", text, flags=re.UNICODE)
     text = re.sub(r"\s+", " ", text).strip()
-
     if not text:
         return text
 
@@ -106,16 +112,25 @@ def extract_quarter(query: str) -> Optional[int]:
 class Intent:
     STORE_WORDS = ["салбар", "дэлгүүр", "store"]
     PRODUCT_WORDS = ["бараа", "product", "item", "sku", "бүтээгдэхүүн"]
-    SALES_WORDS = ["борлуулалт", "орлого", "sales", "netsale", "grosssale"]
-    NAME_WORDS = ["нэр", "name", "product name", "item name", "барааны нэр", "бүтээгдэхүүний нэр"]
-    TOTAL_WORDS = ["нийт", "total", "sum"]
-    QTY_WORDS = ["ширхэг", "тоо", "quantity", "soldqty", "борлуулсан тоо", "зарагдсан ширхэг"]
+    SALES_WORDS = ["борлуулалт", "борлуулалтын", "орлого", "sales", "netsale", "grosssale", "дүн"]
+    NAME_WORDS = [
+        "нэр", "name", "product name", "item name",
+        "барааны нэр", "бүтээгдэхүүний нэр"
+    ]
+    TOTAL_WORDS = ["нийт", "total", "sum", "нийлбэр"]
+    QTY_WORDS = [
+        "ширхэг", "тоо", "quantity", "soldqty",
+        "борлуулсан тоо", "зарагдсан ширхэг"
+    ]
     MONTH_WORDS = ["сар", "сарын", "сар бүр", "monthly", "month", "тренд", "trend"]
     QUARTER_WORDS = ["улирал", "quarter", "q1", "q2", "q3", "q4"]
-    TOP_WORDS = ["хамгийн их", "top", "их"]
+    TOP_WORDS = ["хамгийн их", "top", "их", "өндөр"]
     BOTTOM_WORDS = ["хамгийн бага", "bottom", "бага"]
     MOST_SOLD_WORDS = ["хамгийн их", "most sold", "их зарагдсан", "хамгийн их борлуулалттай"]
-    YOY_COMPARE_WORDS = ["харьцуулах", "харьцуул", "vs", "өнгөрсөн", "өссөн", "өсөлт", "compare", "how much increase"]
+    YOY_COMPARE_WORDS = [
+        "харьцуулах", "харьцуул", "vs", "өнгөрсөн",
+        "өссөн", "өсөлт", "compare", "how much increase"
+    ]
     PERCENT_WORDS = ["хувь", "%", "percent"]
 
     @staticmethod
@@ -177,7 +192,7 @@ class Intent:
     def wants_yoy_growth(query: str) -> bool:
         q = ql(query)
         return (
-            has_any(q, Intent.YOY_COMPARE_WORDS)
-            and has_any(q, Intent.PERCENT_WORDS)
-            and Intent.is_sales(query)
+                has_any(q, Intent.YOY_COMPARE_WORDS)
+                and has_any(q, Intent.PERCENT_WORDS)
+                and Intent.is_sales(query)
         )

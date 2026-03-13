@@ -1,6 +1,5 @@
-# app/agents/text2sql/hard_rules.py
 import re
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Optional
 
 from app.config import CLICKHOUSE_DATABASE
 from app.agents.text2sql.intents import Intent, extract_year, extract_years, extract_quarter
@@ -8,6 +7,28 @@ from app.agents.text2sql.intents import Intent, extract_year, extract_years, ext
 
 def sales_fact() -> str:
     return f"{CLICKHOUSE_DATABASE}.Cluster_Main_Sales"
+
+
+def hard_rule_total_sales_year_only_sql(query: str) -> Optional[str]:
+    ql = (query or "").lower()
+    year = extract_year(query)
+    if not year:
+        return None
+
+    sales_words = ["борлуул", "sales", "netsale", "grosssale", "orlogo"]
+    total_words = ["нийт", "total", "sum", "niit"]
+
+    if not any(k in ql for k in sales_words):
+        return None
+    if not any(k in ql for k in total_words):
+        return None
+
+    return f"""
+SELECT
+  sum(f.NetSale) AS total_net_sales
+FROM {sales_fact()} f
+WHERE toYear(f.SalesDate) = {year}
+""".strip()
 
 
 def hard_rule_top_store_sales_sql(query: str) -> Optional[str]:
@@ -36,15 +57,8 @@ def hard_rule_top_product_sales_sql(query: str) -> Optional[str]:
         return None
 
     ql = (query or "").lower()
-    wants_top_product = (
-            Intent.is_product_query(query)
-            and any(k in ql for k in ["хамгийн их", "top", "их"])
-    )
-    wants_sales_or_qty = (
-            Intent.is_sales(query)
-            or Intent.wants_qty(query)
-            or "зарагдсан" in ql
-    )
+    wants_top_product = Intent.is_product_query(query) and any(k in ql for k in ["хамгийн их", "top", "их"])
+    wants_sales_or_qty = Intent.is_sales(query) or Intent.wants_qty(query) or "зарагдсан" in ql
 
     if not (wants_top_product and wants_sales_or_qty):
         return None
@@ -97,6 +111,68 @@ def hard_rule_dataset_help_text(query: str) -> Optional[str]:
     )
 
 
+def hard_rule_table_about_text(query: str, registry: Any) -> Optional[str]:
+    q = (query or "").strip()
+    ql = q.lower()
+
+    asks_about = any(k in ql for k in [
+        "ямар дата", "ямар мэдээлэл", "юу байдаг", "ямар багана",
+        "тайлбар", "about", "what data", "what is in", "columns"
+    ])
+    if not asks_about:
+        return None
+
+    m = re.search(r"\b([A-Za-z_][A-Za-z0-9_]*)\b", q)
+    if not m:
+        return None
+
+    tname = m.group(1)
+
+    try:
+        hits = registry.search(tname, top_k=3)
+        if not hits:
+            return None
+
+        hits = sorted(hits, key=lambda x: 0 if x.table.lower() == tname.lower() else 1)
+        t = hits[0]
+        cols = [c.name for c in t.columns[:30]]
+        more = "" if len(t.columns) <= 30 else f" … (+{len(t.columns) - 30} cols)"
+        highlights = registry.highlights(t)
+
+        return (
+            f"**{t.db}.{t.table}** хүснэгт:\n"
+            f"- Entity: {t.entity or '-'}\n"
+            f"- Description: {t.description or '-'}\n"
+            f"- Гол баганууд: {', '.join(cols)}{more}\n"
+            f"- Date төрлийн магадлалтай: {', '.join(highlights.get('date_cols', [])) or '-'}\n"
+            f"- Key/ID: {', '.join(highlights.get('key_cols', [])) or '-'}\n"
+            f"- Metric: {', '.join(highlights.get('metric_cols', [])) or '-'}\n"
+            f"- Name багана: {', '.join(highlights.get('name_cols', [])) or '-'}\n"
+        )
+    except Exception:
+        return None
+
+
+def hard_rule_sales_related_tables_text(query: str, registry: Any) -> Optional[str]:
+    ql = (query or "").lower()
+
+    if not any(k in ql for k in ["ямар table", "аль table", "хүснэгтүүд", "tables", "table list"]):
+        return None
+
+    if not any(k in ql for k in ["sales", "борлуул", "product", "бараа", "store", "салбар"]):
+        return None
+
+    hits = registry.search(query, top_k=10)
+    if not hits:
+        return "Тохирох table олдсонгүй."
+
+    lines = []
+    for t in hits[:10]:
+        lines.append(f"- {t.db}.{t.table}: {t.description or '-'}")
+
+    return "Холбоотой хүснэгтүүд:\n" + "\n".join(lines)
+
+
 def hard_rule_same_year_quarter_compare_sql(query: str) -> Optional[str]:
     ql = (query or "").lower()
     year = extract_year(query)
@@ -108,15 +184,13 @@ def hard_rule_same_year_quarter_compare_sql(query: str) -> Optional[str]:
 
     quarters = re.findall(r"\bq([1-4])\b", ql)
     if len(quarters) < 2:
-        m = re.findall(r"([1-4])\s*[-]?\s*р\s*улирал", ql)
-        quarters = m
+        quarters = re.findall(r"([1-4])\s*[-]?\s*р\s*улирал", ql)
 
     if len(quarters) < 2:
         return None
 
     q1 = int(quarters[0])
     q2 = int(quarters[1])
-
     if q1 == q2:
         return None
 
@@ -193,48 +267,6 @@ WHERE toYear(f.SalesDate) IN ({y1}, {y2})
 GROUP BY month_no
 ORDER BY month_no
 """.strip()
-
-
-def hard_rule_table_about_text(query: str, registry: Any) -> Optional[str]:
-    q = (query or "").strip()
-    ql = q.lower()
-
-    asks_about = any(k in ql for k in [
-        "ямар дата", "ямар мэдээлэл", "юу байдаг", "ямар багана",
-        "тайлбар", "about", "what data", "what is in", "columns"
-    ])
-    if not asks_about:
-        return None
-
-    m = re.search(r"\b([A-Za-z_][A-Za-z0-9_]*)\b", q)
-    if not m:
-        return None
-
-    tname = m.group(1)
-
-    try:
-        hits = registry.search(tname, top_k=3)
-        if not hits:
-            return None
-
-        hits = sorted(hits, key=lambda x: 0 if x.table.lower() == tname.lower() else 1)
-        t = hits[0]
-        cols = [c.name for c in t.columns[:30]]
-        more = "" if len(t.columns) <= 30 else f" … (+{len(t.columns) - 30} cols)"
-        highlights = registry.highlights(t)
-
-        return (
-            f"**{t.db}.{t.table}** хүснэгт:\n"
-            f"- Entity: {t.entity or '-'}\n"
-            f"- Description: {t.description or '-'}\n"
-            f"- Гол баганууд: {', '.join(cols)}{more}\n"
-            f"- Date төрлийн магадлалтай: {', '.join(highlights.get('date_cols', [])) or '-'}\n"
-            f"- Key/ID: {', '.join(highlights.get('key_cols', [])) or '-'}\n"
-            f"- Metric: {', '.join(highlights.get('metric_cols', [])) or '-'}\n"
-            f"- Name багана: {', '.join(highlights.get('name_cols', [])) or '-'}\n"
-        )
-    except Exception:
-        return None
 
 
 def hard_rule_yoy_growth_sql(query: str) -> Optional[str]:
@@ -476,6 +508,7 @@ WHERE toYear(f.SalesDate) = {year}
 
 
 HARD_SQL_RULES = [
+    ("total_sales_year_only", hard_rule_total_sales_year_only_sql),
     ("yoy_sales_growth_pct", hard_rule_yoy_growth_sql),
     ("top_store_sales", hard_rule_top_store_sales_sql),
     ("top_product_sales", hard_rule_top_product_sales_sql),

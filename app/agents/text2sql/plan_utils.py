@@ -1,4 +1,3 @@
-# app/agents/text2sql/plan_utils.py
 import json
 import re
 from typing import Any, Dict, List, Optional
