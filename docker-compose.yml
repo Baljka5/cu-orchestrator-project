@@ -4,7 +4,7 @@ services:
     container_name: cu-orchestrator-api
     env_file: .env
     ports:
-      - "8000:8000"
+      - "8100:8100"
     volumes:
       - ./app:/app/app
       - ./ui:/app/ui
