@@ -6,9 +6,72 @@ from app.agents.text2sql.registry_utils import normalize_table_ref
 from app.config import CLICKHOUSE_DATABASE
 
 
+CANONICAL_REPLACEMENTS = {
+    "f.Store": "f.StoreID",
+    "f.Item": "f.GDS_CD",
+    "f.Product": "f.GDS_CD",
+}
+
+
+def _replace_expr(expr: str) -> str:
+    out = expr or ""
+    for old, new in CANONICAL_REPLACEMENTS.items():
+        out = out.replace(old, new)
+    return out
+
+
+def repair_canonical_columns(plan: Dict[str, Any]) -> Dict[str, Any]:
+    plan.setdefault("select", [])
+    plan.setdefault("joins", [])
+    plan.setdefault("where", [])
+    plan.setdefault("group_by", [])
+    plan.setdefault("order_by", [])
+
+    for item in plan["select"]:
+        if isinstance(item, dict) and item.get("expr"):
+            item["expr"] = _replace_expr(item["expr"])
+
+    for join in plan["joins"]:
+        if isinstance(join, dict) and join.get("on"):
+            join["on"] = _replace_expr(join["on"])
+
+    plan["where"] = [_replace_expr(x) for x in plan["where"] if isinstance(x, str)]
+    plan["group_by"] = [_replace_expr(x) for x in plan["group_by"] if isinstance(x, str)]
+    plan["order_by"] = [_replace_expr(x) for x in plan["order_by"] if isinstance(x, str)]
+
+    return plan
+
+
 def force_fact_sales_table(plan: Dict[str, Any], query: str) -> Dict[str, Any]:
-    if Intent.is_sales(query):
+    if Intent.is_sales(query) or Intent.is_store_query(query) or Intent.is_product_query(query):
         plan["fact_table"] = f"{CLICKHOUSE_DATABASE}.Cluster_Main_Sales"
+    return plan
+
+
+def drop_suspicious_joins(plan: Dict[str, Any], query: str) -> Dict[str, Any]:
+    """
+    Sales/store/product summary query үед unnecessary join-уудыг хасна.
+    """
+    ql = (query or "").lower()
+    safe_joins = []
+
+    for j in plan.get("joins", []):
+        if not isinstance(j, dict):
+            continue
+
+        table_name = (j.get("table") or "").split(".")[-1]
+
+        # product name асуугаагүй үед Dimension_IM-с бусад join хэрэггүй
+        if table_name == "Dimension_IM":
+            safe_joins.append(j)
+            continue
+
+        if Intent.is_sales(query) and not Intent.wants_name(query):
+            continue
+
+        safe_joins.append(j)
+
+    plan["joins"] = safe_joins
     return plan
 
 
@@ -54,7 +117,7 @@ def ensure_product_name_join(plan: Dict[str, Any], query: str) -> Dict[str, Any]
     if not has_name:
         plan["select"].insert(0, {"expr": f"{alias}.GDS_NM", "as": "product_name"})
 
-    if Intent.is_most_sold(query):
+    if Intent.is_most_sold(query) or Intent.is_top_product(query):
         has_qty = any(
             isinstance(x, dict) and "SoldQty" in (x.get("expr") or "")
             for x in plan["select"]
@@ -62,10 +125,17 @@ def ensure_product_name_join(plan: Dict[str, Any], query: str) -> Dict[str, Any]
         if not has_qty:
             plan["select"].append({"expr": "sum(f.SoldQty)", "as": "total_qty"})
 
+        has_sales = any(
+            isinstance(x, dict) and "NetSale" in (x.get("expr") or "")
+            for x in plan["select"]
+        )
+        if not has_sales:
+            plan["select"].append({"expr": "sum(f.NetSale)", "as": "total_net_sales"})
+
         if f"{alias}.GDS_NM" not in plan["group_by"]:
             plan["group_by"].insert(0, f"{alias}.GDS_NM")
 
-        plan["order_by"] = ["total_qty DESC"]
+        plan["order_by"] = ["total_qty DESC", "total_net_sales DESC"]
         plan["limit"] = 1
 
     return plan

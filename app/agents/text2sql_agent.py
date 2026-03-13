@@ -12,6 +12,8 @@ from app.agents.text2sql.postprocess import (
     force_fact_sales_table,
     inject_name_join_from_registry,
     ensure_product_name_join,
+    repair_canonical_columns,
+    drop_suspicious_joins,
 )
 from app.agents.text2sql.registry_utils import (
     registry,
@@ -68,8 +70,11 @@ async def text2sql_answer(query: str, session_id: Optional[str] = None) -> Dict[
         return result
 
     plan = force_fact_sales_table(plan, query)
+    plan = repair_canonical_columns(plan)
+    plan = drop_suspicious_joins(plan, query)
     plan = inject_name_join_from_registry(plan, candidates, rel_filtered, query)
     plan = ensure_product_name_join(plan, query)
+    plan = repair_canonical_columns(plan)
 
     fallback_fact = f"{candidates[0].db}.{candidates[0].table}"
     built = build_sql_from_plan(plan, allowed_tables, fallback_fact, CLICKHOUSE_DATABASE)

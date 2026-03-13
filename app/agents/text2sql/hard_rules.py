@@ -10,6 +10,73 @@ def sales_fact() -> str:
     return f"{CLICKHOUSE_DATABASE}.Cluster_Main_Sales"
 
 
+def hard_rule_top_store_sales_sql(query: str) -> Optional[str]:
+    year = extract_year(query)
+    if not year:
+        return None
+
+    if not (Intent.is_sales(query) and Intent.is_top_store(query)):
+        return None
+
+    return f"""
+SELECT
+  f.StoreID AS store_id,
+  sum(f.NetSale) AS total_net_sales
+FROM {sales_fact()} f
+WHERE toYear(f.SalesDate) = {year}
+GROUP BY f.StoreID
+ORDER BY total_net_sales DESC
+LIMIT 1
+""".strip()
+
+
+def hard_rule_top_product_sales_sql(query: str) -> Optional[str]:
+    year = extract_year(query)
+    if not year:
+        return None
+
+    ql = (query or "").lower()
+    wants_top_product = (
+            Intent.is_product_query(query)
+            and any(k in ql for k in ["хамгийн их", "top", "их"])
+    )
+    wants_sales_or_qty = (
+            Intent.is_sales(query)
+            or Intent.wants_qty(query)
+            or "зарагдсан" in ql
+    )
+
+    if not (wants_top_product and wants_sales_or_qty):
+        return None
+
+    if Intent.wants_name(query) or "юу" in ql or "аль" in ql:
+        return f"""
+SELECT
+  d1.GDS_NM AS product_name,
+  sum(f.SoldQty) AS total_qty,
+  sum(f.NetSale) AS total_net_sales
+FROM {sales_fact()} f
+LEFT JOIN {CLICKHOUSE_DATABASE}.Dimension_IM d1
+  ON f.GDS_CD = d1.GDS_CD
+WHERE toYear(f.SalesDate) = {year}
+GROUP BY d1.GDS_NM
+ORDER BY total_qty DESC, total_net_sales DESC
+LIMIT 1
+""".strip()
+
+    return f"""
+SELECT
+  f.GDS_CD AS product_code,
+  sum(f.SoldQty) AS total_qty,
+  sum(f.NetSale) AS total_net_sales
+FROM {sales_fact()} f
+WHERE toYear(f.SalesDate) = {year}
+GROUP BY f.GDS_CD
+ORDER BY total_qty DESC, total_net_sales DESC
+LIMIT 1
+""".strip()
+
+
 def hard_rule_dataset_help_text(query: str) -> Optional[str]:
     q = (query or "").lower()
 
@@ -98,6 +165,7 @@ SELECT
 FROM {sales_fact()} f
 """.strip()
 
+
 def hard_rule_monthly_compare_two_years_sql(query: str) -> Optional[str]:
     ql = (query or "").lower()
     years = extract_years(query)
@@ -125,7 +193,6 @@ WHERE toYear(f.SalesDate) IN ({y1}, {y2})
 GROUP BY month_no
 ORDER BY month_no
 """.strip()
-
 
 
 def hard_rule_table_about_text(query: str, registry: Any) -> Optional[str]:
@@ -229,6 +296,7 @@ FROM {sales_fact()} f
 WHERE toYear(f.SalesDate) = {year}
 """.strip()
 
+
 def hard_rule_top_growth_store_yoy_sql(query: str) -> Optional[str]:
     ql = (query or "").lower()
     years = extract_years(query)
@@ -260,6 +328,7 @@ ORDER BY growth_amount DESC
 LIMIT 1
 """.strip()
 
+
 def hard_rule_same_quarter_two_years_sql(query: str) -> Optional[str]:
     ql = (query or "").lower()
     years = extract_years(query)
@@ -285,6 +354,7 @@ SELECT
   ) AS diff_pct
 FROM {sales_fact()} f
 """.strip()
+
 
 def hard_rule_monthly_sales_sql(query: str) -> Optional[str]:
     year = extract_year(query)
@@ -407,6 +477,8 @@ WHERE toYear(f.SalesDate) = {year}
 
 HARD_SQL_RULES = [
     ("yoy_sales_growth_pct", hard_rule_yoy_growth_sql),
+    ("top_store_sales", hard_rule_top_store_sales_sql),
+    ("top_product_sales", hard_rule_top_product_sales_sql),
     ("same_year_quarter_compare", hard_rule_same_year_quarter_compare_sql),
     ("cross_year_quarter_compare", hard_rule_cross_year_quarter_compare_sql),
     ("same_quarter_two_years_compare", hard_rule_same_quarter_two_years_sql),
