@@ -15,6 +15,40 @@ CORE_TABLES = {
     "war_stock_2024_MV",
 }
 
+DOMAIN_TABLE_PRIORITIES = {
+    "sales": [
+        "Cluster_Main_Sales",
+        "agg_sales_2024",
+        "Dimension_IM",
+        "Dimension_LEM",
+        "Dimension_LEG",
+    ],
+    "inventory": [
+        "war_stock_2024_MV",
+        "Dimension_IM",
+        "Dimension_LEM",
+    ],
+    "product_master": [
+        "Dimension_IM",
+    ],
+    "store_master": [
+        "Dimension_LEM",
+        "Dimension_LEG",
+    ],
+}
+
+
+def rerank_candidates(candidates: List[Any], domain: str) -> List[Any]:
+    priority = DOMAIN_TABLE_PRIORITIES.get(domain, [])
+
+    def score_table(t: Any) -> tuple:
+        table = getattr(t, "table", "")
+        db = getattr(t, "db", "")
+        rank = priority.index(table) if table in priority else 999
+        return (rank, db != "BI_DB", table)
+
+    return sorted(candidates, key=score_table)
+
 
 def normalize_table_ref(table_name: str, default_db: str = CLICKHOUSE_DATABASE) -> str:
     t = (table_name or "").strip()
@@ -62,8 +96,8 @@ def build_allowed_tables(candidates: List[TableInfo]) -> Set[str]:
 
 
 def filter_relationships(
-    candidates: List[TableInfo],
-    all_relationships: List[Dict[str, Any]],
+        candidates: List[TableInfo],
+        all_relationships: List[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
     cand_tables = {t.table for t in candidates[:12]}
     cand_tables.add("Dimension_IM")

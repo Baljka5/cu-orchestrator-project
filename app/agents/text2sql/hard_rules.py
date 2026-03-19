@@ -507,6 +507,26 @@ WHERE toYear(f.SalesDate) = {year}
 """.strip()
 
 
+def hard_rule_inventory_dataset_help_text(query: str) -> Optional[str]:
+    q = (query or "").lower()
+
+    asks_where = any(k in q for k in [
+        "хаана", "ямар table", "аль table", "ямар хүснэгт", "which table"
+    ])
+    asks_inventory = any(k in q for k in [
+        "stock", "inventory", "үлдэгдэл", "агуулах", "on hand"
+    ])
+
+    if not (asks_where and asks_inventory):
+        return None
+
+    return (
+        "Inventory / stock-ийн дата голчлон **BI_DB.war_stock_2024_MV** хүснэгт дээр байна.\n"
+        "Барааны master/name авах бол **BI_DB.Dimension_IM**-тэй join хий.\n"
+        "Store info хэрэгтэй бол **BI_DB.Dimension_LEM** ашиглаж болно."
+    )
+
+
 HARD_SQL_RULES = [
     ("total_sales_year_only", hard_rule_total_sales_year_only_sql),
     ("yoy_sales_growth_pct", hard_rule_yoy_growth_sql),

@@ -9,7 +9,7 @@ from app.agents.text2sql.hard_rules import (
 )
 from app.agents.planner import plan_with_llm
 from app.agents.text2sql.postprocess import (
-    force_fact_sales_table,
+    force_fact_table_by_domain,
     inject_name_join_from_registry,
     ensure_product_name_join,
     repair_canonical_columns,
@@ -25,6 +25,10 @@ from app.agents.text2sql.response import text_response, sql_response, error_resp
 from app.agents.text2sql.history import persist_result
 from app.agents.text2sql.intents import normalize_query
 from app.config import CLICKHOUSE_DATABASE
+from app.agents.text2sql.query_router import classify_query_domain
+from app.agents.text2sql.registry_utils import rerank_candidates
+from app.agents.text2sql.validator import validate_and_repair_plan
+
 
 
 async def text2sql_answer(query: str, session_id: Optional[str] = None) -> Dict[str, Any]:
@@ -56,34 +60,40 @@ async def text2sql_answer(query: str, session_id: Optional[str] = None) -> Dict[
             return result
 
     normalized_query = normalize_query(query)
-    candidates = registry.search(normalized_query, top_k=12) or registry.search(query, top_k=12)
+    domain_info = classify_query_domain(query)
+    domain = domain_info["domain"]
+
+    candidates = registry.search(normalized_query, top_k=20) or registry.search(query, top_k=20)
 
     if not candidates:
         result = error_response("Schema олдсонгүй.", "schema_not_found")
         persist_result(query=query, result=result, session_id=session_id)
         return result
 
+    candidates = rerank_candidates(candidates, domain)
     rel_filtered = filter_relationships(candidates, registry.build_relationships())
     allowed_tables = build_allowed_tables(candidates)
 
     plan = await plan_with_llm(
         query=query,
-        candidates=candidates,
+        candidates=candidates[:12],
         rel_filtered=rel_filtered,
         allowed_tables=allowed_tables,
         registry=registry,
     )
+
     if not plan:
         result = error_response("SQL plan parse хийж чадсангүй.", "json_parse")
         persist_result(query=query, result=result, session_id=session_id)
         return result
 
-    plan = force_fact_sales_table(plan, query)
+    plan = force_fact_table_by_domain(plan, query, domain, candidates)
     plan = repair_canonical_columns(plan)
     plan = drop_suspicious_joins(plan, query)
     plan = inject_name_join_from_registry(plan, candidates, rel_filtered, query)
     plan = ensure_product_name_join(plan, query)
     plan = repair_canonical_columns(plan)
+    plan = validate_and_repair_plan(plan, candidates, allowed_tables, query)
 
     fallback_fact = f"{candidates[0].db}.{candidates[0].table}"
     built = build_sql_from_plan(plan, allowed_tables, fallback_fact, CLICKHOUSE_DATABASE)

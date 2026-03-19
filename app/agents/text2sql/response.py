@@ -1,6 +1,5 @@
 from typing import Any, Callable, Dict
 
-
 def text_response(text: str, rule: str) -> Dict[str, Any]:
     return {
         "answer": text,
@@ -11,13 +10,16 @@ def text_response(text: str, rule: str) -> Dict[str, Any]:
         },
     }
 
-
 def sql_response(sql: str, rule: str, runner: Callable[..., Dict[str, Any]]) -> Dict[str, Any]:
     data = runner(sql, max_rows=20)
 
     preview_rows = len(data.get("rows") or [])
     preview_cols = data.get("columns") or []
     first_row = data.get("rows", [None])[0] if data.get("rows") else None
+
+    answer_text = f"Query үүслээ. {preview_rows} мөр preview байна."
+    if data.get("error"):
+        answer_text = f"Query үүслээ, гэхдээ preview execute дээр алдаа гарлаа: {data['error']}"
 
     meta = {
         "agent": "text2sql",
@@ -36,10 +38,9 @@ def sql_response(sql: str, rule: str, runner: Callable[..., Dict[str, Any]]) -> 
         meta["error"] = data["error"]
 
     return {
-        "answer": sql,
+        "answer": answer_text,
         "meta": meta,
     }
-
 
 def error_response(message: str, code: str) -> Dict[str, Any]:
     return {

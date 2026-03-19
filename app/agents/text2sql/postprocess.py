@@ -40,11 +40,27 @@ def repair_canonical_columns(plan: Dict[str, Any]) -> Dict[str, Any]:
     return plan
 
 
-def force_fact_sales_table(plan: Dict[str, Any], query: str) -> Dict[str, Any]:
-    if Intent.is_sales(query) or Intent.is_store_query(query) or Intent.is_product_query(query):
-        plan["fact_table"] = f"{CLICKHOUSE_DATABASE}.Cluster_Main_Sales"
-    return plan
+def force_fact_table_by_domain(
+    plan: Dict[str, Any],
+    query: str,
+    domain: str,
+    candidates: List[Any],
+) -> Dict[str, Any]:
+    domain_fact_map = {
+        "sales": f"{CLICKHOUSE_DATABASE}.Cluster_Main_Sales",
+        "inventory": f"{CLICKHOUSE_DATABASE}.war_stock_2024_MV",
+        "product_master": f"{CLICKHOUSE_DATABASE}.Dimension_IM",
+        "store_master": f"{CLICKHOUSE_DATABASE}.Dimension_LEM",
+    }
 
+    if domain in domain_fact_map:
+        plan["fact_table"] = domain_fact_map[domain]
+        return plan
+
+    if not plan.get("fact_table") and candidates:
+        plan["fact_table"] = f"{candidates[0].db}.{candidates[0].table}"
+
+    return plan
 
 def drop_suspicious_joins(plan: Dict[str, Any], query: str) -> Dict[str, Any]:
     safe_joins = []
