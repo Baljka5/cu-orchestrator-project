@@ -526,8 +526,131 @@ def hard_rule_inventory_dataset_help_text(query: str) -> Optional[str]:
         "Store info хэрэгтэй бол **BI_DB.Dimension_LEM** ашиглаж болно."
     )
 
+def hard_rule_inventory_total_sql(query: str) -> Optional[str]:
+    ql = (query or "").lower()
+
+    if not any(k in ql for k in ["stock", "inventory", "үлдэгдэл", "агуулах", "on hand"]):
+        return None
+
+    if any(k in ql for k in ["нэр", "name", "product name", "барааны нэр"]):
+        return None
+
+    return f"""
+SELECT
+  sum(f.StockQty) AS total_stock_qty
+FROM {CLICKHOUSE_DATABASE}.war_stock_2024_MV f
+LIMIT 50
+""".strip()
+
+
+def hard_rule_inventory_with_product_name_sql(query: str) -> Optional[str]:
+    ql = (query or "").lower()
+
+    if not any(k in ql for k in ["stock", "inventory", "үлдэгдэл", "агуулах", "on hand"]):
+        return None
+
+    if not any(k in ql for k in ["нэр", "name", "product name", "барааны нэр"]):
+        return None
+
+    return f"""
+SELECT
+  d1.GDS_NM AS product_name,
+  sum(f.StockQty) AS total_stock_qty
+FROM {CLICKHOUSE_DATABASE}.war_stock_2024_MV f
+LEFT JOIN {CLICKHOUSE_DATABASE}.Dimension_IM d1
+  ON f.GDS_CD = d1.GDS_CD
+GROUP BY d1.GDS_NM
+ORDER BY total_stock_qty DESC
+LIMIT 50
+""".strip()
+
+
+def hard_rule_product_list_sql(query: str) -> Optional[str]:
+    ql = (query or "").lower()
+
+    if not any(k in ql for k in ["product list", "item master", "барааны жагсаалт", "product master"]):
+        return None
+
+    return f"""
+SELECT
+  f.GDS_CD AS product_code,
+  f.GDS_NM AS product_name
+FROM {CLICKHOUSE_DATABASE}.Dimension_IM f
+LIMIT 50
+""".strip()
+
+
+def hard_rule_store_list_sql(query: str) -> Optional[str]:
+    ql = (query or "").lower()
+
+    if not any(k in ql for k in ["store list", "branch master", "салбарын мэдээлэл", "дэлгүүрийн жагсаалт"]):
+        return None
+
+    return f"""
+SELECT
+  f.StoreID AS store_id,
+  f.StoreName AS store_name
+FROM {CLICKHOUSE_DATABASE}.Dimension_LEM f
+LIMIT 50
+""".strip()
+
+
+def hard_rule_category_list_sql(query: str) -> Optional[str]:
+    ql = (query or "").lower()
+
+    if not any(k in ql for k in ["product category list", "category list", "ангиллын жагсаалт"]):
+        return None
+
+    return f"""
+SELECT DISTINCT
+  f.CategoryName AS category_name
+FROM {CLICKHOUSE_DATABASE}.Dimension_IM f
+WHERE f.CategoryName IS NOT NULL
+ORDER BY category_name
+LIMIT 100
+""".strip()
+
+
+def hard_rule_brand_list_sql(query: str) -> Optional[str]:
+    ql = (query or "").lower()
+
+    if not any(k in ql for k in ["brand list", "брэндийн жагсаалт"]):
+        return None
+
+    return f"""
+SELECT DISTINCT
+  f.BrandName AS brand_name
+FROM {CLICKHOUSE_DATABASE}.Dimension_IM f
+WHERE f.BrandName IS NOT NULL
+ORDER BY brand_name
+LIMIT 100
+""".strip()
+
+
+def hard_rule_supplier_list_sql(query: str) -> Optional[str]:
+    ql = (query or "").lower()
+
+    if not any(k in ql for k in ["supplier list", "vendor list", "нийлүүлэгчдийн жагсаалт"]):
+        return None
+
+    return f"""
+SELECT DISTINCT
+  f.SupplierName AS supplier_name
+FROM {CLICKHOUSE_DATABASE}.Dimension_IM f
+WHERE f.SupplierName IS NOT NULL
+ORDER BY supplier_name
+LIMIT 100
+""".strip()
 
 HARD_SQL_RULES = [
+    ("inventory_total", hard_rule_inventory_total_sql),
+    ("inventory_with_product_name", hard_rule_inventory_with_product_name_sql),
+    ("product_list", hard_rule_product_list_sql),
+    ("store_list", hard_rule_store_list_sql),
+    ("category_list", hard_rule_category_list_sql),
+    ("brand_list", hard_rule_brand_list_sql),
+    ("supplier_list", hard_rule_supplier_list_sql),
+
     ("total_sales_year_only", hard_rule_total_sales_year_only_sql),
     ("yoy_sales_growth_pct", hard_rule_yoy_growth_sql),
     ("top_store_sales", hard_rule_top_store_sales_sql),

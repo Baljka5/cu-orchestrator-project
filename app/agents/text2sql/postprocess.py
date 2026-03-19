@@ -9,6 +9,10 @@ CANONICAL_REPLACEMENTS = {
     "f.Store": "f.StoreID",
     "f.Item": "f.GDS_CD",
     "f.Product": "f.GDS_CD",
+    "f.SAL_AMT": "f.NetSale",
+    "SAL_AMT": "NetSale",
+    "SalesAmount": "NetSale",
+    "SaleAmt": "NetSale",
 }
 
 
