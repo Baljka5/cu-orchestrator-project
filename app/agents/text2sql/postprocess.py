@@ -4,7 +4,6 @@ from app.agents.text2sql.intents import Intent
 from app.agents.text2sql.registry_utils import normalize_table_ref
 from app.config import CLICKHOUSE_DATABASE
 
-
 CANONICAL_REPLACEMENTS = {
     "f.Store": "f.StoreID",
     "f.Item": "f.GDS_CD",
@@ -13,6 +12,10 @@ CANONICAL_REPLACEMENTS = {
     "SAL_AMT": "NetSale",
     "SalesAmount": "NetSale",
     "SaleAmt": "NetSale",
+    "Revenue": "NetSale",
+    "Amount": "NetSale",
+    "CURRENT_DATE": "today()",
+    "current_date": "today()",
 }
 
 
@@ -45,16 +48,17 @@ def repair_canonical_columns(plan: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def force_fact_table_by_domain(
-    plan: Dict[str, Any],
-    query: str,
-    domain: str,
-    candidates: List[Any],
+        plan: Dict[str, Any],
+        query: str,
+        domain: str,
+        candidates: List[Any],
 ) -> Dict[str, Any]:
     domain_fact_map = {
         "sales": f"{CLICKHOUSE_DATABASE}.Cluster_Main_Sales",
         "inventory": f"{CLICKHOUSE_DATABASE}.war_stock_2024_MV",
         "product_master": f"{CLICKHOUSE_DATABASE}.Dimension_IM",
-        "store_master": f"{CLICKHOUSE_DATABASE}.Dimension_LEM",
+        "store_master": f"{CLICKHOUSE_DATABASE}.Dimension_SM",
+        "promotion": f"{CLICKHOUSE_DATABASE}.Dimension_LEM",
     }
 
     if domain in domain_fact_map:
@@ -66,6 +70,7 @@ def force_fact_table_by_domain(
 
     return plan
 
+
 def drop_suspicious_joins(plan: Dict[str, Any], query: str) -> Dict[str, Any]:
     safe_joins = []
 
@@ -75,7 +80,7 @@ def drop_suspicious_joins(plan: Dict[str, Any], query: str) -> Dict[str, Any]:
 
         table_name = (j.get("table") or "").split(".")[-1]
 
-        if table_name == "Dimension_IM":
+        if table_name in {"Dimension_IM", "Dimension_SM", "Dimension_LEM", "Dimension_LEG"}:
             safe_joins.append(j)
             continue
 
@@ -88,10 +93,10 @@ def drop_suspicious_joins(plan: Dict[str, Any], query: str) -> Dict[str, Any]:
     return plan
 
 
-def find_dim_im_join(plan: Dict[str, Any]) -> Dict[str, Any] | None:
+def find_join(plan: Dict[str, Any], table_name_target: str) -> Dict[str, Any] | None:
     for j in plan.get("joins", []):
         table_name = (j.get("table") or "").split(".")[-1]
-        if table_name == "Dimension_IM":
+        if table_name == table_name_target:
             return j
     return None
 
@@ -100,13 +105,16 @@ def ensure_product_name_join(plan: Dict[str, Any], query: str) -> Dict[str, Any]
     if not Intent.wants_name(query):
         return plan
 
+    if not Intent.is_product_query(query) and not Intent.is_top_product(query) and not Intent.is_most_sold(query):
+        return plan
+
     plan.setdefault("select", [])
     plan.setdefault("joins", [])
     plan.setdefault("group_by", [])
     plan.setdefault("order_by", [])
     plan.setdefault("limit", 50)
 
-    dim_join = find_dim_im_join(plan)
+    dim_join = find_join(plan, "Dimension_IM")
     if not dim_join:
         alias = f"d{len(plan['joins']) + 1}"
         dim_join = {
@@ -127,52 +135,55 @@ def ensure_product_name_join(plan: Dict[str, Any], query: str) -> Dict[str, Any]
     if not has_name:
         plan["select"].insert(0, {"expr": f"{alias}.GDS_NM", "as": "product_name"})
 
-    if Intent.is_most_sold(query) or Intent.is_top_product(query):
-        has_qty = any(
-            isinstance(x, dict) and "SoldQty" in (x.get("expr") or "")
-            for x in plan["select"]
-        )
-        if not has_qty:
-            plan["select"].append({"expr": "sum(f.SoldQty)", "as": "total_qty"})
-
-        has_sales = any(
-            isinstance(x, dict) and "NetSale" in (x.get("expr") or "")
-            for x in plan["select"]
-        )
-        if not has_sales:
-            plan["select"].append({"expr": "sum(f.NetSale)", "as": "total_net_sales"})
-
-        if f"{alias}.GDS_NM" not in plan["group_by"]:
-            plan["group_by"].insert(0, f"{alias}.GDS_NM")
-
-        plan["order_by"] = ["total_qty DESC", "total_net_sales DESC"]
-        plan["limit"] = 1
+    if f"{alias}.GDS_NM" not in plan["group_by"]:
+        plan["group_by"].insert(0, f"{alias}.GDS_NM")
 
     return plan
 
 
 def inject_name_join_from_registry(
-    plan: Dict[str, Any],
-    candidates: List[Any],
-    rel_filtered: List[Dict[str, Any]],
-    query: str,
+        plan: Dict[str, Any],
+        candidates: List[Any],
+        rel_filtered: List[Dict[str, Any]],
+        query: str,
 ) -> Dict[str, Any]:
     if not Intent.wants_name(query):
         return plan
 
-    if find_dim_im_join(plan):
-        return plan
-
     fact_full = (plan.get("fact_table") or "").strip()
-    fact = fact_full.split()[0].split(".")[-1] if fact_full else candidates[0].table
+    fact = fact_full.split()[0].split(".")[-1] if fact_full else (candidates[0].table if candidates else "")
+
+    if not fact:
+        return plan
 
     name_cols = [r for r in rel_filtered if r.get("type") == "name_column"]
     join_keys = [r for r in rel_filtered if r.get("type") == "join_key"]
 
-    if not name_cols:
+    target_name_table = None
+    if Intent.is_store_query(query) and not Intent.is_sales(query):
+        target_name_table = "Dimension_SM"
+    elif Intent.is_store_query(query) and Intent.is_sales(query):
+        target_name_table = "Dimension_SM"
+    elif Intent.is_promotion_query(query):
+        target_name_table = "Dimension_LEM"
+    elif Intent.is_product_query(query) or Intent.is_top_product(query) or Intent.is_most_sold(query):
+        target_name_table = "Dimension_IM"
+
+    if not target_name_table:
         return plan
 
-    target = name_cols[0]
+    if find_join(plan, target_name_table):
+        return plan
+
+    target = None
+    for r in name_cols:
+        if r.get("table") == target_name_table:
+            target = r
+            break
+
+    if not target:
+        return plan
+
     dim_tbl = target["table"]
     name_col = target["name_column"]
 
@@ -188,35 +199,40 @@ def inject_name_join_from_registry(
         return plan
 
     plan.setdefault("joins", [])
-    if not plan["joins"]:
-        alias = "d1"
-        lt, lc = matched_join["left"].split(".", 1)
-        rt, rc = matched_join["right"].split(".", 1)
+    alias = f"d{len(plan['joins']) + 1}"
 
-        if lt == fact:
-            on = f"f.{lc} = {alias}.{rc}"
-        else:
-            on = f"f.{rc} = {alias}.{lc}"
+    lt, lc = matched_join["left"].split(".", 1)
+    rt, rc = matched_join["right"].split(".", 1)
 
-        plan["joins"].append(
-            {
-                "type": "LEFT",
-                "table": normalize_table_ref(dim_tbl),
-                "alias": alias,
-                "on": on,
-            }
-        )
+    if lt == fact:
+        on = f"f.{lc} = {alias}.{rc}"
+    else:
+        on = f"f.{rc} = {alias}.{lc}"
+
+    plan["joins"].append(
+        {
+            "type": "LEFT",
+            "table": normalize_table_ref(dim_tbl),
+            "alias": alias,
+            "on": on,
+        }
+    )
 
     plan.setdefault("select", [])
     plan.setdefault("group_by", [])
 
-    if not any(
-        isinstance(x, dict) and x.get("as") in ("item_name", "product_name")
-        for x in plan["select"]
-    ):
-        plan["select"].insert(0, {"expr": "d1." + name_col, "as": "item_name"})
+    alias_name = "name_value"
+    if dim_tbl == "Dimension_IM":
+        alias_name = "product_name"
+    elif dim_tbl == "Dimension_SM":
+        alias_name = "store_name"
+    elif dim_tbl == "Dimension_LEM":
+        alias_name = "event_name"
 
-    if f"d1.{name_col}" not in plan["group_by"]:
-        plan["group_by"].insert(0, f"d1.{name_col}")
+    if not any(isinstance(x, dict) and x.get("as") == alias_name for x in plan["select"]):
+        plan["select"].insert(0, {"expr": f"{alias}.{name_col}", "as": alias_name})
+
+    if f"{alias}.{name_col}" not in plan["group_by"]:
+        plan["group_by"].insert(0, f"{alias}.{name_col}")
 
     return plan
